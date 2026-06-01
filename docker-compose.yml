@@ -1,0 +1,33 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: lecturelog
+      POSTGRES_PASSWORD: lecturelog
+      POSTGRES_DB: lecturelog
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lecturelog"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://lecturelog:lecturelog@db:5432/lecturelog
+      UPLOAD_DIR: /app/data
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./:/app
+      - appdata:/app/data
+
+volumes:
+  pgdata:
+  appdata:
