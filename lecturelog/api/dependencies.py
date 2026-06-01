@@ -18,3 +18,15 @@ def get_worker(request: Request) -> PipelineWorker:
 
 def get_upload_dir(request: Request) -> Path:
     return request.app.state.upload_dir
+
+
+def get_gemini(request: Request):
+    return request.app.state.gemini
+
+
+def get_video_slides_config(request: Request) -> dict:
+    return {
+        "models": request.app.state.video_slides_models,
+        "concurrency": request.app.state.concurrency_video,
+        "prompts_dir": request.app.state.prompts_dir,
+    }
