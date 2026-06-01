@@ -8,6 +8,13 @@
     # отправить аудио (+ опционально слайды) и получить task_id
     python scripts/submit_task.py submit --audio lecture.mp3 --slides slides.pdf
 
+    # видео (слайды извлекаются из видеоряда автоматически)
+    python scripts/submit_task.py submit --video lecture.mp4
+    python scripts/submit_task.py submit --video-url "https://youtu.be/abc"
+
+    # видео без слайдов
+    python scripts/submit_task.py submit --video lecture.mp4 --no-slides
+
     # узнать статус (разово)
     python scripts/submit_task.py status <task_id>
 
@@ -67,14 +74,22 @@ def _get_json(url: str) -> dict[str, Any]:
         return json.loads(resp.read().decode())
 
 
-def _build_multipart(files: dict[str, Path]) -> tuple[bytes, str]:
+def _build_multipart(
+    files: dict[str, Path], fields: dict[str, str] | None = None
+) -> tuple[bytes, str]:
     """Собрать тело multipart/form-data вручную (без requests).
 
     Файлы целиком читаются в память — для очень больших медиа это заметный
     расход RAM, но stdlib не даёт простого потокового multipart-аплоада.
+    Текстовые поля (fields) пишутся как обычные form-part без filename.
     """
     boundary = uuid.uuid4().hex
     out = bytearray()
+    for name, value in (fields or {}).items():
+        out += f"--{boundary}\r\n".encode()
+        out += f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode()
+        out += value.encode()
+        out += b"\r\n"
     for name, path in files.items():
         if not path.is_file():
             _fail(f"Файл не найден: {path}")
@@ -112,10 +127,25 @@ def _format_status(status: dict[str, Any]) -> str:
 
 
 def cmd_submit(args: argparse.Namespace) -> None:
-    files = {"audio": Path(args.audio)}
+    sources = sum(x is not None for x in (args.audio, args.video, args.video_url))
+    if sources != 1:
+        _fail("Передайте ровно один из: --audio, --video, --video-url")
+
+    files: dict[str, Path] = {}
+    fields: dict[str, str] = {}
+    if args.audio:
+        files["audio"] = Path(args.audio)
+    elif args.video:
+        files["video"] = Path(args.video)
+    else:
+        fields["video_url"] = args.video_url
+
     if args.slides:
         files["slides"] = Path(args.slides)
-    body, ctype = _build_multipart(files)
+    if args.no_slides:
+        fields["no_slides"] = "true"
+
+    body, ctype = _build_multipart(files, fields)
     req = urllib.request.Request(
         f"{args.base}/tasks", data=body, headers={"Content-Type": ctype}, method="POST"
     )
@@ -164,8 +194,12 @@ def _build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(required=True)
 
     s = sub.add_parser("submit", help="создать задачу")
-    s.add_argument("--audio", required=True)
-    s.add_argument("--slides")
+    s.add_argument("--audio", help="путь к аудиофайлу")
+    s.add_argument("--video", help="путь к видеофайлу")
+    s.add_argument("--video-url", dest="video_url", help="URL видео (YouTube/HTTP)")
+    s.add_argument("--slides", help="путь к PDF/PPTX со слайдами")
+    s.add_argument("--no-slides", dest="no_slides", action="store_true",
+                   help="не делать слайды (для видео — отключить авто-извлечение)")
     s.set_defaults(func=cmd_submit)
 
     st = sub.add_parser("status", help="разовый статус")
