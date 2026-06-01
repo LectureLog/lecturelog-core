@@ -38,6 +38,10 @@ def client(repo, tmp_path):
     app.state.repository = repo
     app.state.worker = worker
     app.state.upload_dir = tmp_path
+    app.state.gemini = object()
+    app.state.video_slides_models = ["m"]
+    app.state.concurrency_video = 1
+    app.state.prompts_dir = tmp_path
     return TestClient(app)
 
 
@@ -55,11 +59,6 @@ def test_create_audio_returns_task_id(client):
     r = client.post("/api/v1/tasks", files={"audio": ("a.mp3", b"data", "audio/mpeg")})
     assert r.status_code == 200
     assert "task_id" in r.json()
-
-
-def test_create_video_rejected_in_pr1(client):
-    r = client.post("/api/v1/tasks", files={"video": ("v.mp4", b"data", "video/mp4")})
-    assert r.status_code == 400
 
 
 def test_status_404_for_unknown(client):

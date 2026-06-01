@@ -6,7 +6,9 @@ from typing import Annotated, Optional
 from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
 
-from lecturelog.api.dependencies import get_repository, get_upload_dir, get_worker
+from lecturelog.api.dependencies import (
+    get_gemini, get_repository, get_upload_dir, get_video_slides_config, get_worker,
+)
 from lecturelog.api.schemas import CreateTaskResponse, TaskStatusResponse
 from lecturelog.application.use_cases.create_task import CreateTaskUseCase
 from lecturelog.application.use_cases.get_result import GetResultUseCase
@@ -15,8 +17,10 @@ from lecturelog.application.use_cases.get_transcript import GetTranscriptUseCase
 from lecturelog.application.worker import PipelineJob
 from lecturelog.domain.enums import PipelineStage, TaskStatus
 from lecturelog.domain.exceptions import TranscribeFailed
-from lecturelog.domain.media_source import AudioSource
+from lecturelog.domain.media_source import AudioSource, VideoFileSource, VideoUrlSource
+from lecturelog.infrastructure.media.url_utils import is_url
 from lecturelog.infrastructure.slides.document_provider import DocumentSlideProvider
+from lecturelog.infrastructure.slides.video_provider import VideoSlideProvider
 from lecturelog.infrastructure.srt import srt_to_plain_text
 
 router = APIRouter(prefix="/api/v1")
@@ -46,9 +50,12 @@ async def create_task(
     video: Annotated[Optional[UploadFile], File()] = None,
     video_url: Annotated[Optional[str], Form()] = None,
     slides: Annotated[Optional[UploadFile], File()] = None,
+    no_slides: Annotated[bool, Form()] = False,
     repository=Depends(get_repository),
     worker=Depends(get_worker),
     upload_dir: Path = Depends(get_upload_dir),
+    gemini=Depends(get_gemini),
+    video_slides_config: dict = Depends(get_video_slides_config),
 ):
     sources_count = sum(x is not None for x in (audio, video, video_url))
     if sources_count != 1:
@@ -56,41 +63,72 @@ async def create_task(
             status_code=400,
             content={"detail": "Specify exactly one of: audio, video, video_url"},
         )
-    # PR #1 — только аудиорежим. Видео добавится в PR #2.
-    if video is not None or video_url is not None:
+    if video_url is not None and not is_url(video_url):
         return JSONResponse(
             status_code=400,
-            content={"detail": "Видеорежим будет доступен в PR #2; используйте audio"},
+            content={"detail": "video_url должен быть http/https URL"},
         )
 
-    # task_id генерит use-case; чтобы знать каталог заранее, сохраняем во временный
-    # каталог по имени, а реальный task_id подставляем через enqueue-замыкание.
-    # Проще: сначала создаём use-case с enqueue, который соберёт job уже зная task_id.
-    pending: dict[str, object] = {}
+    media_upload = audio if audio is not None else video
 
     async def enqueue(task_id: str) -> None:
         task_dir = upload_dir / task_id
         task_dir.mkdir(parents=True, exist_ok=True)
 
-        audio_path = task_dir / (audio.filename or "audio.bin")
-        await _save_upload(audio, audio_path)
+        # Источник: сохраняем загруженный файл (audio/video) на диск; для video_url
+        # файла нет — его скачает ingestor внутри pipeline.
+        if video_url is not None:
+            source = VideoUrlSource(url=video_url)
+        else:
+            media_path = task_dir / (media_upload.filename or "media.bin")
+            await _save_upload(media_upload, media_path)
+            source = (
+                VideoFileSource(path=media_path) if video is not None
+                else AudioSource(path=media_path)
+            )
 
-        slide_provider = None
+        # Документ-провайдер можно собрать сразу (файл приложен).
+        document_provider = None
         if slides is not None:
             slides_path = task_dir / (slides.filename or "slides.bin")
             await _save_upload(slides, slides_path)
-            slide_provider = DocumentSlideProvider(slides_path=slides_path)
+            document_provider = DocumentSlideProvider(slides_path=slides_path)
+
+        # Видео-провайдер отложен: video_path появится только после ingest.
+        video_slide_provider_factory = None
+        if video is not None or video_url is not None:
+            def video_slide_provider_factory(local_video: Path):
+                return VideoSlideProvider(
+                    gemini_client=gemini, video_path=local_video,
+                    models=video_slides_config["models"],
+                    concurrency=video_slides_config["concurrency"],
+                    prompts_dir=video_slides_config["prompts_dir"],
+                )
+
+        # Три режима слайдов: no_slides гасит оба провайдера; документ приоритетнее
+        # видео; отложенный видео-провайдер строит pipeline после ingest.
+        if no_slides:
+            document_provider = None
+            video_slide_provider_factory = None
 
         task = await repository.get(task_id)
         await worker.enqueue(PipelineJob(
-            task_id=task_id, task=task,
-            source=AudioSource(path=audio_path),
-            slide_provider=slide_provider, work_dir=task_dir,
+            task_id=task_id, task=task, source=source,
+            slide_provider=document_provider, work_dir=task_dir,
+            video_slide_provider_factory=video_slide_provider_factory,
         ))
 
+    # Источник для use-case нужен только ради source.kind (Task.source_kind);
+    # реальные пути собираются в enqueue, когда известен task_id.
+    if video_url is not None:
+        kind_source = VideoUrlSource(url=video_url)
+    elif video is not None:
+        kind_source = VideoFileSource(path=Path("placeholder.bin"))
+    else:
+        kind_source = AudioSource(path=Path("placeholder.bin"))
+
     use_case = CreateTaskUseCase(repository=repository, enqueue=enqueue)
-    task_id = await use_case.execute(
-        source=AudioSource(path=Path(audio.filename or "audio.bin")), slides_path=None)
+    task_id = await use_case.execute(source=kind_source, slides_path=None)
     return CreateTaskResponse(task_id=task_id)
 
 

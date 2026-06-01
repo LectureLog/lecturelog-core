@@ -43,7 +43,9 @@ class PipelineService:
         await self._repo.update(task)
 
     async def run(self, task: Task, source: MediaSource,
-                  slide_provider: SlideProvider | None, work_dir: Path) -> Path:
+                  slide_provider: SlideProvider | None, work_dir: Path,
+                  video_slide_provider_factory: Callable[[Path], SlideProvider] | None = None
+                  ) -> Path:
         is_video = is_video_source(source)
         plan = ProgressPlan.for_video() if is_video else self._plan_factory()
         try:
@@ -54,6 +56,11 @@ class PipelineService:
                                 stage=PipelineStage.VIDEO_INGEST, progress=0, error=None)
                 local_video = await self._ingestor.ingest(
                     source, output_dir=work_dir / "video_src")
+
+                # Отложенное создание видео-провайдера: документ приоритетнее,
+                # иначе авто-извлечение из только что полученного видеофайла.
+                if slide_provider is None and video_slide_provider_factory is not None:
+                    slide_provider = video_slide_provider_factory(local_video)
 
                 await self._set(task, stage=PipelineStage.AUDIO_EXTRACT,
                                 progress=plan.stage_start(PipelineStage.AUDIO_EXTRACT))
