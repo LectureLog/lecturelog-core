@@ -7,14 +7,14 @@ from lecturelog.domain.media_source import AudioSource
 
 class RecordingService:
     def __init__(self): self.processed = []; self.lock = asyncio.Lock()
-    async def run(self, task, source, slide_provider, work_dir):
+    async def run(self, task, source, slide_provider, work_dir, **kwargs):
         async with self.lock:
             self.processed.append(task.task_id)
 
 
 class SlowService:
     def __init__(self): self.concurrent = 0; self.max_concurrent = 0
-    async def run(self, task, source, slide_provider, work_dir):
+    async def run(self, task, source, slide_provider, work_dir, **kwargs):
         self.concurrent += 1
         self.max_concurrent = max(self.max_concurrent, self.concurrent)
         await asyncio.sleep(0.05)

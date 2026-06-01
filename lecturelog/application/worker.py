@@ -4,6 +4,7 @@ import asyncio
 import logging
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 from lecturelog.domain.media_source import MediaSource
 from lecturelog.domain.models import Task
@@ -19,6 +20,9 @@ class PipelineJob:
     source: MediaSource
     slide_provider: SlideProvider | None
     work_dir: Path
+    # Отложенный видео-провайдер: для video_url локального файла нет на момент
+    # enqueue, поэтому провайдер строится из пути, который вернёт ingest.
+    video_slide_provider_factory: Callable[[Path], SlideProvider] | None = None
 
 
 class PipelineWorker:
@@ -40,7 +44,8 @@ class PipelineWorker:
             try:
                 await self._service.run(
                     task=job.task, source=job.source,
-                    slide_provider=job.slide_provider, work_dir=job.work_dir)
+                    slide_provider=job.slide_provider, work_dir=job.work_dir,
+                    video_slide_provider_factory=job.video_slide_provider_factory)
             except Exception as exc:  # задача уже помечена FAILED в repo
                 logger.warning("Воркер: задача %s завершилась ошибкой: %s", job.task_id, exc)
             finally:

@@ -14,6 +14,8 @@ from lecturelog.infrastructure.export.obsidian_exporter import ObsidianExporter
 from lecturelog.infrastructure.llm.gemini_client import GeminiClient
 from lecturelog.infrastructure.llm.key_pool import KeyPool
 from lecturelog.infrastructure.media.audio_cutter import FfmpegAudioCutter
+from lecturelog.infrastructure.media.video_cutter import FfmpegVideoCutter
+from lecturelog.infrastructure.media.video_ingestor import VideoIngestor
 from lecturelog.infrastructure.persistence.engine import make_engine, make_session_factory
 from lecturelog.infrastructure.persistence.task_repository import PostgresTaskRepository
 from lecturelog.infrastructure.structurize.gemini_structurizer import GeminiStructurizer
@@ -53,7 +55,8 @@ async def lifespan(app: FastAPI):
     )
     service = PipelineService(
         repository=repo, transcriber=transcriber, structurizer=structurizer,
-        audio_cutter=FfmpegAudioCutter(), exporter=ObsidianExporter(),
+        audio_cutter=FfmpegAudioCutter(), video_cutter=FfmpegVideoCutter(),
+        ingestor=VideoIngestor(), exporter=ObsidianExporter(),
         progress_plan_factory=ProgressPlan.for_audio,
     )
     worker = PipelineWorker(service=service, concurrency=cfg.worker.max_concurrent_tasks)
@@ -63,6 +66,12 @@ async def lifespan(app: FastAPI):
     app.state.repository = repo
     app.state.worker = worker
     app.state.upload_dir = Path(cfg.storage.upload_dir)
+    # Для отложенного создания VideoSlideProvider в роуте (video_path появляется
+    # только после ingest, поэтому провайдер строится per-task, а не как синглтон).
+    app.state.gemini = gemini
+    app.state.video_slides_models = cfg.gemini.video_slides_models
+    app.state.concurrency_video = cfg.gemini.concurrency_video
+    app.state.prompts_dir = Path("prompts")
     try:
         yield
     finally:
