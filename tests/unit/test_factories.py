@@ -42,4 +42,6 @@ def test_video_auto_when_no_document():
 
 
 def test_none_when_nothing_available():
-    assert slide_provider_factory(no_slides=False, document_provider=None, video_provider=None) is None
+    assert (
+        slide_provider_factory(no_slides=False, document_provider=None, video_provider=None) is None
+    )

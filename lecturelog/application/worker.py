@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
 
 from lecturelog.domain.media_source import MediaSource
 from lecturelog.domain.models import Task
@@ -43,9 +43,12 @@ class PipelineWorker:
             job = await self._queue.get()
             try:
                 await self._service.run(
-                    task=job.task, source=job.source,
-                    slide_provider=job.slide_provider, work_dir=job.work_dir,
-                    video_slide_provider_factory=job.video_slide_provider_factory)
+                    task=job.task,
+                    source=job.source,
+                    slide_provider=job.slide_provider,
+                    work_dir=job.work_dir,
+                    video_slide_provider_factory=job.video_slide_provider_factory,
+                )
             except Exception as exc:  # задача уже помечена FAILED в repo
                 logger.warning("Воркер: задача %s завершилась ошибкой: %s", job.task_id, exc)
             finally:

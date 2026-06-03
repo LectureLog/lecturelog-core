@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Annotated, Optional
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
 
 from lecturelog.api.dependencies import (
-    get_gemini, get_repository, get_upload_dir, get_video_slides_config, get_worker,
+    get_gemini,
+    get_repository,
+    get_upload_dir,
+    get_video_slides_config,
+    get_worker,
 )
 from lecturelog.api.schemas import CreateTaskResponse, TaskStatusResponse
 from lecturelog.application.use_cases.create_task import CreateTaskUseCase
@@ -15,7 +19,6 @@ from lecturelog.application.use_cases.get_result import GetResultUseCase
 from lecturelog.application.use_cases.get_status import GetStatusUseCase
 from lecturelog.application.use_cases.get_transcript import GetTranscriptUseCase
 from lecturelog.application.worker import PipelineJob
-from lecturelog.domain.enums import PipelineStage, TaskStatus
 from lecturelog.domain.exceptions import TranscribeFailed
 from lecturelog.domain.media_source import AudioSource, VideoFileSource, VideoUrlSource
 from lecturelog.infrastructure.media.url_utils import is_url
@@ -46,10 +49,10 @@ def _transcript_srt_path(upload_dir: Path, task_id: str) -> Path:
 @router.post("/tasks", response_model=CreateTaskResponse)
 async def create_task(
     request: Request,
-    audio: Annotated[Optional[UploadFile], File()] = None,
-    video: Annotated[Optional[UploadFile], File()] = None,
-    video_url: Annotated[Optional[str], Form()] = None,
-    slides: Annotated[Optional[UploadFile], File()] = None,
+    audio: Annotated[UploadFile | None, File()] = None,
+    video: Annotated[UploadFile | None, File()] = None,
+    video_url: Annotated[str | None, Form()] = None,
+    slides: Annotated[UploadFile | None, File()] = None,
     no_slides: Annotated[bool, Form()] = False,
     repository=Depends(get_repository),
     worker=Depends(get_worker),
@@ -83,7 +86,8 @@ async def create_task(
             media_path = task_dir / (media_upload.filename or "media.bin")
             await _save_upload(media_upload, media_path)
             source = (
-                VideoFileSource(path=media_path) if video is not None
+                VideoFileSource(path=media_path)
+                if video is not None
                 else AudioSource(path=media_path)
             )
 
@@ -97,9 +101,11 @@ async def create_task(
         # Видео-провайдер отложен: video_path появится только после ingest.
         video_slide_provider_factory = None
         if video is not None or video_url is not None:
+
             def video_slide_provider_factory(local_video: Path):
                 return VideoSlideProvider(
-                    gemini_client=gemini, video_path=local_video,
+                    gemini_client=gemini,
+                    video_path=local_video,
                     models=video_slides_config["models"],
                     concurrency=video_slides_config["concurrency"],
                     prompts_dir=video_slides_config["prompts_dir"],
@@ -112,11 +118,16 @@ async def create_task(
             video_slide_provider_factory = None
 
         task = await repository.get(task_id)
-        await worker.enqueue(PipelineJob(
-            task_id=task_id, task=task, source=source,
-            slide_provider=document_provider, work_dir=task_dir,
-            video_slide_provider_factory=video_slide_provider_factory,
-        ))
+        await worker.enqueue(
+            PipelineJob(
+                task_id=task_id,
+                task=task,
+                source=source,
+                slide_provider=document_provider,
+                work_dir=task_dir,
+                video_slide_provider_factory=video_slide_provider_factory,
+            )
+        )
 
     # Источник для use-case нужен только ради source.kind (Task.source_kind);
     # реальные пути собираются в enqueue, когда известен task_id.
@@ -182,7 +193,8 @@ async def get_task_transcript(
 
     if format == "srt":
         return FileResponse(
-            path=result.path, filename="transcript.srt",
+            path=result.path,
+            filename="transcript.srt",
             media_type="application/x-subrip",
         )
 

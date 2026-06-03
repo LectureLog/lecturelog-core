@@ -24,10 +24,19 @@ class GroqConfig(BaseSettings):
 class GeminiConfig(BaseSettings):
     model_config = _BASE
     api_keys_raw: str = Field(alias="GEMINI_API_KEYS")
-    models_split: str = Field("gemini-3.5-flash,gemini-3-flash-preview", alias="GEMINI_MODELS_SPLIT")
-    models_subsplit: str = Field("gemini-3.5-flash,gemini-3-flash-preview", alias="GEMINI_MODELS_SUBSPLIT")
-    models_render: str = Field("gemini-3.1-flash-lite,gemini-3.5-flash,gemini-3-flash-preview", alias="GEMINI_MODELS_RENDER")
-    models_video_slides: str = Field("gemini-3-flash-preview,gemini-3.5-flash", alias="GEMINI_MODELS_VIDEO_SLIDES")
+    models_split: str = Field(
+        "gemini-3.5-flash,gemini-3-flash-preview", alias="GEMINI_MODELS_SPLIT"
+    )
+    models_subsplit: str = Field(
+        "gemini-3.5-flash,gemini-3-flash-preview", alias="GEMINI_MODELS_SUBSPLIT"
+    )
+    models_render: str = Field(
+        "gemini-3.1-flash-lite,gemini-3.5-flash,gemini-3-flash-preview",
+        alias="GEMINI_MODELS_RENDER",
+    )
+    models_video_slides: str = Field(
+        "gemini-3-flash-preview,gemini-3.5-flash", alias="GEMINI_MODELS_VIDEO_SLIDES"
+    )
     concurrency_subsplit: int = Field(2, alias="GEMINI_CONCURRENCY_SUBSPLIT")
     concurrency_render: int = Field(5, alias="GEMINI_CONCURRENCY_RENDER")
     concurrency_video: int = Field(5, alias="GEMINI_CONCURRENCY_VIDEO")

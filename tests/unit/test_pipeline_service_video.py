@@ -85,9 +85,14 @@ class FakeExporter:
 
 def _service(repo, ingestor, transcriber, structurizer, audio_cutter, video_cutter, exporter):
     return PipelineService(
-        repository=repo, transcriber=transcriber, structurizer=structurizer,
-        audio_cutter=audio_cutter, video_cutter=video_cutter, ingestor=ingestor,
-        exporter=exporter, progress_plan_factory=ProgressPlan.for_audio,
+        repository=repo,
+        transcriber=transcriber,
+        structurizer=structurizer,
+        audio_cutter=audio_cutter,
+        video_cutter=video_cutter,
+        ingestor=ingestor,
+        exporter=exporter,
+        progress_plan_factory=ProgressPlan.for_audio,
     )
 
 
@@ -106,11 +111,16 @@ async def test_video_pipeline_ingests_extracts_and_completes(tmp_path):
     audio_cutter = RecordingCutter("audio")
     video_cutter = RecordingCutter("video")
     exporter = FakeExporter(zip_path)
-    service = _service(repo, ingestor, transcriber, FakeStructurizer(topics),
-                       audio_cutter, video_cutter, exporter)
+    service = _service(
+        repo, ingestor, transcriber, FakeStructurizer(topics), audio_cutter, video_cutter, exporter
+    )
 
-    await service.run(task=task, source=VideoUrlSource(url="https://youtu.be/x"),
-                      slide_provider=None, work_dir=tmp_path)
+    await service.run(
+        task=task,
+        source=VideoUrlSource(url="https://youtu.be/x"),
+        slide_provider=None,
+        work_dir=tmp_path,
+    )
 
     final = await repo.get("v1")
     assert final.status == TaskStatus.DONE
@@ -131,10 +141,21 @@ async def test_video_stages_include_ingest_and_extract(tmp_path):
     topics = [Topic(title="T", start="0:00", end="5:00", sections=[sec], slide_indices=[])]
     zip_path = tmp_path / "r.zip"
     zip_path.write_bytes(b"z")
-    service = _service(repo, FakeIngestor(), FakeTranscriber(), FakeStructurizer(topics),
-                       RecordingCutter("audio"), RecordingCutter("video"), FakeExporter(zip_path))
-    await service.run(task=task, source=VideoFileSource(path=tmp_path / "v.mp4"),
-                      slide_provider=None, work_dir=tmp_path)
+    service = _service(
+        repo,
+        FakeIngestor(),
+        FakeTranscriber(),
+        FakeStructurizer(topics),
+        RecordingCutter("audio"),
+        RecordingCutter("video"),
+        FakeExporter(zip_path),
+    )
+    await service.run(
+        task=task,
+        source=VideoFileSource(path=tmp_path / "v.mp4"),
+        slide_provider=None,
+        work_dir=tmp_path,
+    )
     seen = [stage for stage, _ in repo.stages]
     assert PipelineStage.VIDEO_INGEST in seen
     assert PipelineStage.AUDIO_EXTRACT in seen

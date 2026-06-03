@@ -54,9 +54,13 @@ async def lifespan(app: FastAPI):
         prompts_dir=Path("prompts"),
     )
     service = PipelineService(
-        repository=repo, transcriber=transcriber, structurizer=structurizer,
-        audio_cutter=FfmpegAudioCutter(), video_cutter=FfmpegVideoCutter(),
-        ingestor=VideoIngestor(), exporter=ObsidianExporter(),
+        repository=repo,
+        transcriber=transcriber,
+        structurizer=structurizer,
+        audio_cutter=FfmpegAudioCutter(),
+        video_cutter=FfmpegVideoCutter(),
+        ingestor=VideoIngestor(),
+        exporter=ObsidianExporter(),
         progress_plan_factory=ProgressPlan.for_audio,
     )
     worker = PipelineWorker(service=service, concurrency=cfg.worker.max_concurrent_tasks)

@@ -27,6 +27,7 @@
     # забрать транскрипт (srt|txt)
     python scripts/submit_task.py transcript <task_id> --format txt
 """
+
 from __future__ import annotations
 
 import argparse
@@ -96,8 +97,7 @@ def _build_multipart(
         ctype = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
         out += f"--{boundary}\r\n".encode()
         out += (
-            f'Content-Disposition: form-data; name="{name}"; '
-            f'filename="{path.name}"\r\n'
+            f'Content-Disposition: form-data; name="{name}"; filename="{path.name}"\r\n'
         ).encode()
         out += f"Content-Type: {ctype}\r\n\r\n".encode()
         out += path.read_bytes()
@@ -198,8 +198,12 @@ def _build_parser() -> argparse.ArgumentParser:
     s.add_argument("--video", help="путь к видеофайлу")
     s.add_argument("--video-url", dest="video_url", help="URL видео (YouTube/HTTP)")
     s.add_argument("--slides", help="путь к PDF/PPTX со слайдами")
-    s.add_argument("--no-slides", dest="no_slides", action="store_true",
-                   help="не делать слайды (для видео — отключить авто-извлечение)")
+    s.add_argument(
+        "--no-slides",
+        dest="no_slides",
+        action="store_true",
+        help="не делать слайды (для видео — отключить авто-извлечение)",
+    )
     s.set_defaults(func=cmd_submit)
 
     st = sub.add_parser("status", help="разовый статус")

@@ -1,5 +1,7 @@
 from lecturelog.infrastructure.srt import (
-    srt_to_plain_text, parse_srt_time, extract_srt_fragment,
+    extract_srt_fragment,
+    parse_srt_time,
+    srt_to_plain_text,
 )
 
 SAMPLE = """1

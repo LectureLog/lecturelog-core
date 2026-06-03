@@ -1,6 +1,10 @@
-import pytest
 from lecturelog.domain.exceptions import (
-    DomainError, TaskNotFound, ResultNotReady, TranscribeFailed, InvalidFormat, InvalidSource,
+    DomainError,
+    InvalidFormat,
+    InvalidSource,
+    ResultNotReady,
+    TaskNotFound,
+    TranscribeFailed,
 )
 
 

@@ -7,10 +7,11 @@ from lecturelog.infrastructure.slides.document_provider import DocumentSlideProv
 
 def _make_pdf(path: Path, pages: int):
     import pymupdf
+
     doc = pymupdf.open()
     for i in range(pages):
         page = doc.new_page()
-        page.insert_text((72, 72), f"Slide {i+1}")
+        page.insert_text((72, 72), f"Slide {i + 1}")
     doc.save(str(path))
     doc.close()
 

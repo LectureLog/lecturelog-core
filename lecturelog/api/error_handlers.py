@@ -4,7 +4,9 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from lecturelog.domain.exceptions import (
-    InvalidSource, ResultNotReady, TaskNotFound,
+    InvalidSource,
+    ResultNotReady,
+    TaskNotFound,
 )
 
 

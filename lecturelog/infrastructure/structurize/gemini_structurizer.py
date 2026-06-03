@@ -108,9 +108,7 @@ class GeminiStructurizer(Structurizer):
             return (topic_index, {})
 
         topic_slide_bytes = [
-            slide_bytes[idx - 1]
-            for idx in slide_indices
-            if 1 <= idx <= len(slide_bytes)
+            slide_bytes[idx - 1] for idx in slide_indices if 1 <= idx <= len(slide_bytes)
         ]
         if not topic_slide_bytes:
             return (topic_index, {})
@@ -173,9 +171,7 @@ class GeminiStructurizer(Structurizer):
         prompt = f"{prompt}\n{fragment}"
 
         related_images = [
-            slide_bytes[idx - 1]
-            for idx in slide_indices
-            if 1 <= idx <= len(slide_bytes)
+            slide_bytes[idx - 1] for idx in slide_indices if 1 <= idx <= len(slide_bytes)
         ]
 
         async with semaphore:
@@ -247,7 +243,8 @@ class GeminiStructurizer(Structurizer):
         if slide_images:
             # 3a. Грубый match: темы → слайды (1 вызов)
             rough_prompt = self._read_prompt("slide_match_topics_v1.md")
-            rough_prompt = f"{rough_prompt}\n\nТемы лекции:\n{json.dumps(topics_data, ensure_ascii=False)}"
+            topics_json = json.dumps(topics_data, ensure_ascii=False)
+            rough_prompt = f"{rough_prompt}\n\nТемы лекции:\n{topics_json}"
             rough_raw = await self._gemini.call(
                 prompt=rough_prompt,
                 models=self._subsplit_models,
@@ -286,7 +283,8 @@ class GeminiStructurizer(Structurizer):
                 idx, mapping = await task
                 topic_slide_mapping[idx] = mapping
                 fine_done += 1
-                await _emit_progress(on_progress, 40 + int((fine_done / max(len(fine_tasks), 1)) * 10))
+                fine_pct = 40 + int((fine_done / max(len(fine_tasks), 1)) * 10)
+                await _emit_progress(on_progress, fine_pct)
 
         await _emit_progress(on_progress, 50)
 

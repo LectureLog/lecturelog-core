@@ -30,8 +30,16 @@ class PostgresTaskRepository(TaskRepository):
                 session.add(task_to_row(task))
             else:
                 fresh = task_to_row(task)
-                for col in ("source_kind", "status", "stage", "progress_pct",
-                            "error", "result_path", "created_at", "updated_at"):
+                for col in (
+                    "source_kind",
+                    "status",
+                    "stage",
+                    "progress_pct",
+                    "error",
+                    "result_path",
+                    "created_at",
+                    "updated_at",
+                ):
                     setattr(row, col, getattr(fresh, col))
             await session.commit()
 

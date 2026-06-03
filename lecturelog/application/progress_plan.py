@@ -31,11 +31,11 @@ class ProgressPlan:
     bands: dict[PipelineStage, tuple[int, int]]
 
     @classmethod
-    def for_audio(cls) -> "ProgressPlan":
+    def for_audio(cls) -> ProgressPlan:
         return cls(bands=dict(_AUDIO_BANDS))
 
     @classmethod
-    def for_video(cls) -> "ProgressPlan":
+    def for_video(cls) -> ProgressPlan:
         return cls(bands=dict(_VIDEO_BANDS))
 
     def stage_start(self, stage: PipelineStage) -> int:

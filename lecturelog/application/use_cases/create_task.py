@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Awaitable, Callable
 from uuid import uuid4
 
 from lecturelog.domain.media_source import MediaSource
@@ -10,8 +10,7 @@ from lecturelog.domain.ports import TaskRepository
 
 
 class CreateTaskUseCase:
-    def __init__(self, repository: TaskRepository,
-                 enqueue: Callable[[str], Awaitable[None]]):
+    def __init__(self, repository: TaskRepository, enqueue: Callable[[str], Awaitable[None]]):
         self._repo = repository
         self._enqueue = enqueue
 

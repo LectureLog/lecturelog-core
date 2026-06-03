@@ -1,10 +1,15 @@
-from lecturelog.domain.models import Topic, Section
+from lecturelog.domain.models import Section, Topic
 from lecturelog.infrastructure.structurize.slide_backfill import backfill_missing_slides
 
 
 def _topic(title, sections):
-    return Topic(title=title, start="0:00", end="9:00", sections=sections,
-                 slide_indices=sorted({s for sec in sections for s in sec.slide_indices}))
+    return Topic(
+        title=title,
+        start="0:00",
+        end="9:00",
+        sections=sections,
+        slide_indices=sorted({s for sec in sections for s in sec.slide_indices}),
+    )
 
 
 def test_missing_slide_attached_to_nearest_predecessor():

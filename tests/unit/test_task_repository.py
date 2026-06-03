@@ -1,7 +1,8 @@
 import pytest
-from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+from lecturelog.domain.enums import PipelineStage, TaskStatus
 from lecturelog.domain.models import Task
-from lecturelog.domain.enums import TaskStatus, PipelineStage
 from lecturelog.infrastructure.persistence.orm import Base
 from lecturelog.infrastructure.persistence.task_repository import PostgresTaskRepository
 

@@ -39,7 +39,9 @@ async def test_round_robin_alternates_keys():
 @pytest.mark.asyncio
 async def test_rate_limited_pair_is_skipped():
     clock = FakeClock()
-    pool = KeyPool(clients=["c0", "c1"], block_seconds=60.0, time_func=clock, sleep_func=_noop_sleep)
+    pool = KeyPool(
+        clients=["c0", "c1"], block_seconds=60.0, time_func=clock, sleep_func=_noop_sleep
+    )
     _, idx, model = await pool.acquire(["gemini-3.5-flash"])
     await pool.mark_rate_limited(idx, model)
     # следующий acquire должен выдать другой ключ (заблокированный пропущен)

@@ -28,9 +28,7 @@ class VideoIngestor(MediaIngestor):
             if not src_path.exists():
                 raise FileNotFoundError(f"Видеофайл не найден: {src_path}")
             suffix = (
-                src_path.suffix.lower()
-                if src_path.suffix.lower() in VIDEO_EXTENSIONS
-                else ".mp4"
+                src_path.suffix.lower() if src_path.suffix.lower() in VIDEO_EXTENSIONS else ".mp4"
             )
             target = output_dir / f"video{suffix}"
             if src_path.resolve() != target.resolve():
@@ -47,11 +45,15 @@ class VideoIngestor(MediaIngestor):
         proc = await asyncio.create_subprocess_exec(
             "ffmpeg",
             "-y",
-            "-i", str(video_path),
+            "-i",
+            str(video_path),
             "-vn",
-            "-c:a", "libmp3lame",
-            "-b:a", "128k",
-            "-ac", "1",
+            "-c:a",
+            "libmp3lame",
+            "-b:a",
+            "128k",
+            "-ac",
+            "1",
             str(target),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -74,9 +76,12 @@ class VideoIngestor(MediaIngestor):
         try:
             proc = await asyncio.create_subprocess_exec(
                 self._yt_dlp_bin(),
-                "-f", "bestvideo[height<=720]+bestaudio/best[height<=720]",
-                "--merge-output-format", "mp4",
-                "-o", str(output_path),
+                "-f",
+                "bestvideo[height<=720]+bestaudio/best[height<=720]",
+                "--merge-output-format",
+                "mp4",
+                "-o",
+                str(output_path),
                 url,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,

@@ -41,7 +41,9 @@ def client(tmp_path):
     app.dependency_overrides[deps.get_upload_dir] = lambda: tmp_path
     app.dependency_overrides[deps.get_gemini] = lambda: object()
     app.dependency_overrides[deps.get_video_slides_config] = lambda: {
-        "models": ["m"], "concurrency": 1, "prompts_dir": tmp_path,
+        "models": ["m"],
+        "concurrency": 1,
+        "prompts_dir": tmp_path,
     }
     app.state.repository = repo
     app.state.worker = worker

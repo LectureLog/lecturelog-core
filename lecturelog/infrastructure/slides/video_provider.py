@@ -53,9 +53,13 @@ class VideoSlideProvider(SlideProvider):
 
     async def _get_video_duration(self, video_path: Path) -> int:
         proc = await asyncio.create_subprocess_exec(
-            "ffprobe", "-v", "quiet",
-            "-show_entries", "format=duration",
-            "-of", "default=noprint_wrappers=1:nokey=1",
+            "ffprobe",
+            "-v",
+            "quiet",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
             str(video_path),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -76,12 +80,18 @@ class VideoSlideProvider(SlideProvider):
         if duration is not None and duration > 0 and timestamp_sec >= duration:
             timestamp_sec = max(0, duration - 1)
         proc = await asyncio.create_subprocess_exec(
-            "ffmpeg", "-y",
-            "-ss", str(timestamp_sec),
-            "-i", str(video_path),
-            "-frames:v", "1",
-            "-q:v", "2",
-            "-loglevel", "error",
+            "ffmpeg",
+            "-y",
+            "-ss",
+            str(timestamp_sec),
+            "-i",
+            str(video_path),
+            "-frames:v",
+            "1",
+            "-q:v",
+            "2",
+            "-loglevel",
+            "error",
             str(target),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -93,7 +103,10 @@ class VideoSlideProvider(SlideProvider):
             )
 
     async def _split_into_chunks(
-        self, video_path: Path, tmp_dir: Path, total: int | None = None,
+        self,
+        video_path: Path,
+        tmp_dir: Path,
+        total: int | None = None,
     ) -> list[tuple[int, int, Path]]:
         """Нарезает видео на чанки по CHUNK_DURATION_SEC секунд с перекрытием CHUNK_OVERLAP_SEC."""
         if total is None:
@@ -111,12 +124,17 @@ class VideoSlideProvider(SlideProvider):
             chunk_path = tmp_dir / f"chunk-{chunk_idx:02d}.mp4"
             proc = await asyncio.create_subprocess_exec(
                 "ffmpeg",
-                "-ss", str(start),
-                "-t", str(end - start),
-                "-i", str(video_path),
-                "-c", "copy",
+                "-ss",
+                str(start),
+                "-t",
+                str(end - start),
+                "-i",
+                str(video_path),
+                "-c",
+                "copy",
                 "-y",
-                "-loglevel", "error",
+                "-loglevel",
+                "error",
                 str(chunk_path),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
@@ -208,13 +226,13 @@ class VideoSlideProvider(SlideProvider):
             multi = len(chunks) > 1
 
             async def _process_chunk(
-                start: int, end: int, chunk_path: Path,
+                start: int,
+                end: int,
+                chunk_path: Path,
             ) -> tuple[int, int, list[dict] | Exception]:
                 async with semaphore:
                     prompt = (
-                        self._build_chunk_prompt(base_prompt, start, end)
-                        if multi
-                        else base_prompt
+                        self._build_chunk_prompt(base_prompt, start, end) if multi else base_prompt
                     )
                     try:
                         raw = await self._call_gemini_video(prompt, chunk_path)
@@ -223,9 +241,7 @@ class VideoSlideProvider(SlideProvider):
                     except Exception as exc:
                         return start, end, exc
 
-            tasks = [
-                asyncio.create_task(_process_chunk(s, e, p)) for s, e, p in chunks
-            ]
+            tasks = [asyncio.create_task(_process_chunk(s, e, p)) for s, e, p in chunks]
             total = len(tasks)
             done = 0
             for task in asyncio.as_completed(tasks):
@@ -242,7 +258,8 @@ class VideoSlideProvider(SlideProvider):
                 detail = ", ".join(f"{s}-{e}: {err}" for s, e, err in failed_ranges)
                 logger.warning(
                     "video_slides: %d чанк(ов) не обработаны: %s",
-                    len(failed_ranges), detail,
+                    len(failed_ranges),
+                    detail,
                 )
                 # Все чанки упали — это ошибка извлечения, а не «видео без слайдов».
                 if len(failed_ranges) == len(chunks):

@@ -1,4 +1,5 @@
 import pytest
+
 from lecturelog.config.settings import AppConfig
 
 
@@ -44,5 +45,5 @@ def test_missing_required_key_raises(monkeypatch):
     monkeypatch.delenv("GROQ_API_KEYS", raising=False)
     monkeypatch.setenv("GEMINI_API_KEYS", "k1")
     monkeypatch.setenv("DATABASE_URL", "x")
-    with pytest.raises(Exception):
+    with pytest.raises(Exception):  # noqa: B017
         AppConfig()

@@ -1,7 +1,11 @@
 from pathlib import Path
 
 from lecturelog.domain.media_source import (
-    AudioSource, VideoFileSource, VideoUrlSource, MediaSource, is_video_source,
+    AudioSource,
+    MediaSource,
+    VideoFileSource,
+    VideoUrlSource,
+    is_video_source,
 )
 
 

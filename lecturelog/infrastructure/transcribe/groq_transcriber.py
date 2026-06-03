@@ -97,7 +97,7 @@ async def _emit_progress(on_progress: ProgressCallback | None, value: int) -> No
 
 
 def _retry_delay(attempt: int) -> int:
-    return 2 ** attempt * 5
+    return 2**attempt * 5
 
 
 async def _run_ffmpeg_segment(audio_path: Path, output_dir: Path) -> None:
@@ -121,7 +121,8 @@ async def _run_ffmpeg_segment(audio_path: Path, output_dir: Path) -> None:
     )
     _, stderr = await process.communicate()
     if process.returncode != 0:
-        raise RuntimeError(f"ffmpeg завершился с ошибкой: {stderr.decode('utf-8', errors='ignore')}")
+        details = stderr.decode("utf-8", errors="ignore")
+        raise RuntimeError(f"ffmpeg завершился с ошибкой: {details}")
 
 
 async def _transcribe_chunk(
@@ -174,7 +175,9 @@ async def _transcribe_chunk(
                 raise
         else:
             # Все попытки исчерпаны без успешного ответа (не должно достигаться при raise выше)
-            raise RuntimeError(f"Не удалось транскрибировать чанк {chunk_path.name} за {max_retries} попыток")
+            raise RuntimeError(
+                f"Не удалось транскрибировать чанк {chunk_path.name} за {max_retries} попыток"
+            )
         words: list[dict[str, Any]] = payload.get("words") or []
         result: list[dict[str, Any]] = []
         for item in words:

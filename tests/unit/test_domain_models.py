@@ -1,7 +1,5 @@
-from datetime import datetime
-
 from lecturelog.domain.enums import PipelineStage, TaskStatus
-from lecturelog.domain.models import Section, Topic, Task
+from lecturelog.domain.models import Section, Task, Topic
 
 
 def test_section_holds_content_and_slides():
@@ -26,7 +24,12 @@ def test_task_defaults_to_pending_zero_progress():
 
 
 def test_task_accepts_stage_and_progress():
-    task = Task(task_id="abc", source_kind="video_file",
-                status=TaskStatus.PROCESSING, stage=PipelineStage.TRANSCRIBE, progress_pct=15)
+    task = Task(
+        task_id="abc",
+        source_kind="video_file",
+        status=TaskStatus.PROCESSING,
+        stage=PipelineStage.TRANSCRIBE,
+        progress_pct=15,
+    )
     assert task.stage == PipelineStage.TRANSCRIBE
     assert task.progress_pct == 15

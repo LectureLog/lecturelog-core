@@ -4,8 +4,9 @@ import asyncio
 import logging
 import time
 from collections import defaultdict
+from collections.abc import Awaitable, Callable
 from datetime import date, datetime, timedelta
-from typing import Any, Awaitable, Callable
+from typing import Any
 from zoneinfo import ZoneInfo
 
 from lecturelog.infrastructure.llm.model_limits import limits_for

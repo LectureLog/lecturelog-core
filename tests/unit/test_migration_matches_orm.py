@@ -1,6 +1,7 @@
-from sqlalchemy import create_engine, inspect
-from alembic.config import Config
 from alembic import command
+from alembic.config import Config
+from sqlalchemy import create_engine, inspect
+
 from lecturelog.infrastructure.persistence.orm import TaskRow
 
 

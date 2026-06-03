@@ -13,10 +13,7 @@ def backfill_missing_slides(topics: list[Topic], total_slides: int) -> None:
         return
 
     assigned: set[int] = {
-        s
-        for topic in topics
-        for section in topic.sections
-        for s in section.slide_indices
+        s for topic in topics for section in topic.sections for s in section.slide_indices
     }
     missing = sorted(n for n in range(1, total_slides + 1) if n not in assigned)
     if not missing:

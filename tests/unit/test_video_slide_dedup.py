@@ -13,8 +13,9 @@ def test_merges_chunks_and_sorts_by_time():
 
 def test_dedups_near_duplicates_within_threshold():
     # два слайда в пределах 10с -> остаётся один (последний)
-    chunks = [[{"timestamp_finalized": "01:00", "tag": "a"},
-               {"timestamp_finalized": "01:05", "tag": "b"}]]
+    chunks = [
+        [{"timestamp_finalized": "01:00", "tag": "a"}, {"timestamp_finalized": "01:05", "tag": "b"}]
+    ]
     out = merge_and_dedup(chunks)
     assert len(out) == 1
     assert out[0]["tag"] == "b"

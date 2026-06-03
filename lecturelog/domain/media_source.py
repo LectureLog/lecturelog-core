@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Literal, Union
+from typing import Literal
 
 from pydantic import BaseModel
 
@@ -21,7 +21,7 @@ class VideoUrlSource(BaseModel):
     url: str
 
 
-MediaSource = Union[AudioSource, VideoFileSource, VideoUrlSource]
+MediaSource = AudioSource | VideoFileSource | VideoUrlSource
 
 
 def is_video_source(source: MediaSource) -> bool:

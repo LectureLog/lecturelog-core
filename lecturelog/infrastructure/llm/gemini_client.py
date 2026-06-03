@@ -3,7 +3,8 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from lecturelog.infrastructure.llm.key_pool import KeyPool
 
@@ -93,10 +94,7 @@ class GeminiClient:
                 from google.genai import types  # type: ignore[import-not-found]
 
                 return [
-                    *[
-                        types.Part.from_bytes(data=image, mime_type="image/png")
-                        for image in images
-                    ],
+                    *[types.Part.from_bytes(data=image, mime_type="image/png") for image in images],
                     prompt,
                 ]
             return prompt

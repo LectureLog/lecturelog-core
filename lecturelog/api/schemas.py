@@ -17,7 +17,7 @@ class TaskStatusResponse(BaseModel):
     result_path: str | None
 
     @classmethod
-    def from_task(cls, task: Task) -> "TaskStatusResponse":
+    def from_task(cls, task: Task) -> TaskStatusResponse:
         return cls(
             task_id=task.task_id,
             stage=task.stage.value if task.stage else None,

@@ -55,7 +55,8 @@ class ObsidianExporter(Exporter):
 
         media_targets: list[Path] = []
         for idx, fragment in enumerate(media_fragments):
-            title_slug = _slugify(all_sections[idx].title if idx < len(all_sections) else f"section-{idx + 1}")
+            title = all_sections[idx].title if idx < len(all_sections) else f"section-{idx + 1}"
+            title_slug = _slugify(title)
             target = media_dir / f"{idx + 1:02d}-{title_slug}{fragment.suffix}"
             shutil.copy2(fragment, target)
             media_targets.append(target)
@@ -89,7 +90,8 @@ class ObsidianExporter(Exporter):
                 lines.append("")
 
                 if global_section_idx < len(media_targets):
-                    media_rel = media_targets[global_section_idx].relative_to(output_root).as_posix()
+                    media_target = media_targets[global_section_idx]
+                    media_rel = media_target.relative_to(output_root).as_posix()
                     lines.append(f"[{section.start} - {section.end}]")
                     lines.append("")
                     if media_kind == "audio":
@@ -99,7 +101,7 @@ class ObsidianExporter(Exporter):
                         lines.append("```")
                     else:
                         # Видео: нативный wiki-embed Obsidian рендерит HTML5-плеер.
-                        # Код-блок video-player не поддерживает ни один плагин — текст не проигрывается.
+                        # Код-блок video-player не поддерживает ни один плагин.
                         lines.append(f"![[{media_rel}]]")
                 lines.append("")
 

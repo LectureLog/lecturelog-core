@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import String, Integer, DateTime
+from sqlalchemy import DateTime, Integer, String
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from lecturelog.domain.enums import PipelineStage, TaskStatus

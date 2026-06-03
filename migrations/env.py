@@ -2,9 +2,9 @@ import asyncio
 import os
 from logging.config import fileConfig
 
+from alembic import context
 from sqlalchemy import create_engine
 from sqlalchemy.ext.asyncio import create_async_engine
-from alembic import context
 
 from lecturelog.infrastructure.persistence.orm import Base
 
