@@ -93,6 +93,35 @@ class TaskRepository(ABC):
         """Пометить все PROCESSING-задачи как INTERRUPTED (при старте). Вернуть кол-во."""
 
 
+class Storage(ABC):
+    """Порт хранилища лекций. domain/application не знают про boto/minio —
+    presigned и override-заголовки реализует инфра-адаптер."""
+
+    @abstractmethod
+    async def upload_file(self, local_path: Path, key: str) -> None:
+        """Залить локальный файл в бакет под ключом."""
+
+    @abstractmethod
+    async def download_file(self, key: str, local_path: Path) -> None:
+        """Скачать объект по ключу в локальный файл (создав родительские каталоги)."""
+
+    @abstractmethod
+    async def presigned_put(self, key: str, expires_in: int | None = None) -> str | None:
+        """Presigned PUT URL для загрузки клиентом в uploads/ (публичный хост).
+        None, если публичный endpoint не задан."""
+
+    @abstractmethod
+    async def presigned_get(
+        self,
+        key: str,
+        expires_in: int | None = None,
+        download_filename: str | None = None,
+        content_type: str | None = None,
+    ) -> str | None:
+        """Presigned GET URL. Если публичный endpoint не задан — None
+        (наружу presigned не выдаётся, работает только стрим)."""
+
+
 class WebhookNotifier(ABC):
     @abstractmethod
     async def notify(self, task_id: str, status: TaskStatus, error: str | None = None) -> None:
