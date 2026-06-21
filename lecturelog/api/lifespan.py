@@ -6,6 +6,7 @@ from pathlib import Path
 
 from fastapi import FastAPI
 
+from lecturelog.application.factories import webhook_notifier_factory
 from lecturelog.application.pipeline_service import PipelineService
 from lecturelog.application.progress_plan import ProgressPlan
 from lecturelog.application.worker import PipelineWorker
@@ -53,6 +54,16 @@ async def lifespan(app: FastAPI):
         concurrency_render=cfg.gemini.concurrency_render,
         prompts_dir=Path("prompts"),
     )
+    # Опциональный вебхук: включается только при заданных URL и секрете.
+    notifier = webhook_notifier_factory(cfg.webhook.callback_url, cfg.webhook.secret)
+    if cfg.webhook.callback_url and not cfg.webhook.secret:
+        logger.warning(
+            "PLATFORM_CALLBACK_URL задан, но LECTURELOG_WEBHOOK_SECRET нет — вебхук выключен"
+        )
+    if notifier is not None:
+        # Логируем сам факт включения, без секрета.
+        logger.info("Вебхук включён, callback_url=%s", cfg.webhook.callback_url)
+
     service = PipelineService(
         repository=repo,
         transcriber=transcriber,
@@ -62,6 +73,7 @@ async def lifespan(app: FastAPI):
         ingestor=VideoIngestor(),
         exporter=ObsidianExporter(),
         progress_plan_factory=ProgressPlan.for_audio,
+        webhook_notifier=notifier,
     )
     worker = PipelineWorker(service=service, concurrency=cfg.worker.max_concurrent_tasks)
     await worker.start()

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from lecturelog.domain.media_source import MediaSource, is_video_source
-from lecturelog.domain.ports import MediaCutter, SlideProvider
+from lecturelog.domain.ports import MediaCutter, SlideProvider, WebhookNotifier
+from lecturelog.infrastructure.webhook.http_notifier import HttpWebhookNotifier
 
 
 def cutter_factory(
@@ -28,3 +29,15 @@ def slide_provider_factory(
     if document_provider is not None:
         return document_provider
     return video_provider
+
+
+def webhook_notifier_factory(
+    callback_url: str | None, secret: str | None
+) -> WebhookNotifier | None:
+    """Нотификатор только при заданных callback_url и секрете; иначе None (автономный режим)."""
+    if not callback_url:
+        return None
+    if not secret:
+        # Секрет обязателен для подписи; без него вебхук не включаем (логируем выше по стеку).
+        return None
+    return HttpWebhookNotifier(callback_url=callback_url, secret=secret)
