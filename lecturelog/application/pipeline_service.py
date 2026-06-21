@@ -19,10 +19,14 @@ from lecturelog.domain.ports import (
     Structurizer,
     TaskRepository,
     Transcriber,
+    WebhookNotifier,
 )
 from lecturelog.infrastructure.slides.video_provider import VideoSlideProvider
 
 logger = logging.getLogger(__name__)
+
+# Терминальные статусы: только на них шлём вебхук платформе.
+_TERMINAL = {TaskStatus.DONE, TaskStatus.FAILED, TaskStatus.INTERRUPTED}
 
 
 class PipelineService:
@@ -36,6 +40,7 @@ class PipelineService:
         progress_plan_factory: Callable[[], ProgressPlan],
         video_cutter: MediaCutter | None = None,
         ingestor: MediaIngestor | None = None,
+        webhook_notifier: WebhookNotifier | None = None,
     ):
         self._repo = repository
         self._transcriber = transcriber
@@ -45,6 +50,8 @@ class PipelineService:
         self._ingestor = ingestor
         self._exporter = exporter
         self._plan_factory = progress_plan_factory
+        # Опциональный нотификатор: None в автономном режиме (без PLATFORM_CALLBACK_URL).
+        self._webhook = webhook_notifier
 
     async def _set(
         self, task: Task, *, status=None, stage=None, progress=None, error=None, result_path=None
@@ -60,6 +67,15 @@ class PipelineService:
         if result_path is not None:
             task.result_path = result_path
         await self._repo.update(task)
+
+        # Пуш платформе только на терминальных статусах и только если нотификатор задан.
+        # Best-effort: ошибка/таймаут логируется и НЕ роняет/не задерживает пайплайн
+        # (защита от лежащей платформы; надёжность — на fallback-поллинге платформы).
+        if status in _TERMINAL and self._webhook is not None:
+            try:
+                await self._webhook.notify(task.task_id, status, error=task.error)
+            except Exception as exc:  # noqa: BLE001 — намеренно глушим любой сбой нотификации
+                logger.warning("Вебхук для task=%s не доставлен: %s", task.task_id, exc)
 
     async def _persist_usage(self, task: Task, acc: UsageAccumulator) -> None:
         """Гранулярность персиста = стадия: пересчитать total и сохранить usage.

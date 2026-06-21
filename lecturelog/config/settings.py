@@ -77,6 +77,14 @@ class WorkerConfig(BaseSettings):
     max_concurrent_tasks: int = Field(2, alias="MAX_CONCURRENT_TASKS")
 
 
+class WebhookConfig(BaseSettings):
+    # Оба поля опциональны: режим вебхука включается только при заданном callback_url.
+    # Без URL движок работает автономно (поллинг-эндпоинты), поведение не меняется.
+    model_config = _BASE
+    callback_url: str | None = Field(None, alias="PLATFORM_CALLBACK_URL")
+    secret: str | None = Field(None, alias="LECTURELOG_WEBHOOK_SECRET")
+
+
 class AppConfig(BaseSettings):
     # Сборка под-конфигов как computed-полей: каждый блок сам читает env,
     # поэтому AppConfig не объявляет собственных env-полей и ничего не валидирует напрямую.
@@ -85,7 +93,7 @@ class AppConfig(BaseSettings):
     def model_post_init(self, __context: object) -> None:
         # Форсируем создание под-конфигов сразу, чтобы required-поля
         # (GROQ_API_KEYS и т.д.) валидировались в момент построения AppConfig.
-        _ = (self.groq, self.gemini, self.database, self.storage, self.worker)
+        _ = (self.groq, self.gemini, self.database, self.storage, self.worker, self.webhook)
 
     @computed_field  # type: ignore[prop-decorator]
     @cached_property
@@ -111,6 +119,11 @@ class AppConfig(BaseSettings):
     @cached_property
     def worker(self) -> WorkerConfig:
         return WorkerConfig()
+
+    @computed_field  # type: ignore[prop-decorator]
+    @cached_property
+    def webhook(self) -> WebhookConfig:
+        return WebhookConfig()
 
 
 @lru_cache

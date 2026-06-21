@@ -47,3 +47,25 @@ def test_missing_required_key_raises(monkeypatch):
     monkeypatch.setenv("DATABASE_URL", "x")
     with pytest.raises(Exception):  # noqa: B017
         AppConfig()
+
+
+def test_webhook_config_defaults_none(monkeypatch):
+    # Без env-переменных оба поля вебхука опциональны и равны None (автономный режим).
+    monkeypatch.delenv("PLATFORM_CALLBACK_URL", raising=False)
+    monkeypatch.delenv("LECTURELOG_WEBHOOK_SECRET", raising=False)
+    for k, v in _env().items():
+        monkeypatch.setenv(k, v)
+    cfg = AppConfig()
+    assert cfg.webhook.callback_url is None
+    assert cfg.webhook.secret is None
+
+
+def test_webhook_config_reads_env(monkeypatch):
+    # Заданные URL и секрет читаются из окружения.
+    for k, v in _env().items():
+        monkeypatch.setenv(k, v)
+    monkeypatch.setenv("PLATFORM_CALLBACK_URL", "https://p/cb")
+    monkeypatch.setenv("LECTURELOG_WEBHOOK_SECRET", "s3cr3t")
+    cfg = AppConfig()
+    assert cfg.webhook.callback_url == "https://p/cb"
+    assert cfg.webhook.secret == "s3cr3t"
