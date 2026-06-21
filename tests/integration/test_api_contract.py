@@ -90,6 +90,46 @@ def test_create_audio_returns_task_id(client):
     assert "task_id" in r.json()
 
 
+def test_create_with_s3_key_creates_s3_object_source(client):
+    r = client.post(
+        "/api/v1/tasks",
+        data={"s3_key": "uploads/abc/lecture.mp3", "media": "audio"},
+    )
+    assert r.status_code == 200
+    job = client._worker.jobs[-1]
+    assert job.source.kind == "s3_object"
+    assert job.source.key == "uploads/abc/lecture.mp3"
+    assert job.source.media == "audio"
+
+
+def test_create_with_s3_key_video(client):
+    r = client.post(
+        "/api/v1/tasks",
+        data={"s3_key": "uploads/abc/lec.mp4", "media": "video"},
+    )
+    assert r.status_code == 200
+    job = client._worker.jobs[-1]
+    assert job.source.kind == "s3_object"
+    assert job.source.media == "video"
+
+
+def test_s3_key_and_file_together_is_400(client):
+    r = client.post(
+        "/api/v1/tasks",
+        data={"s3_key": "uploads/abc/lecture.mp3", "media": "audio"},
+        files={"audio": ("a.mp3", b"d", "audio/mpeg")},
+    )
+    assert r.status_code == 400
+
+
+def test_s3_key_invalid_media_is_400(client):
+    r = client.post(
+        "/api/v1/tasks",
+        data={"s3_key": "uploads/abc/lecture.mp3", "media": "doc"},
+    )
+    assert r.status_code == 400
+
+
 def test_status_404_for_unknown(client):
     r = client.get("/api/v1/tasks/nonexistent")
     assert r.status_code == 404

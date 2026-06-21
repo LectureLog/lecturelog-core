@@ -20,7 +20,12 @@ from lecturelog.application.use_cases.get_status import GetStatusUseCase
 from lecturelog.application.use_cases.get_transcript import GetTranscriptUseCase
 from lecturelog.application.worker import PipelineJob
 from lecturelog.domain.exceptions import TranscribeFailed
-from lecturelog.domain.media_source import AudioSource, VideoFileSource, VideoUrlSource
+from lecturelog.domain.media_source import (
+    AudioSource,
+    S3ObjectSource,
+    VideoFileSource,
+    VideoUrlSource,
+)
 from lecturelog.infrastructure.media.url_utils import is_url
 from lecturelog.infrastructure.slides.document_provider import DocumentSlideProvider
 from lecturelog.infrastructure.slides.video_provider import VideoSlideProvider
@@ -52,6 +57,8 @@ async def create_task(
     audio: Annotated[UploadFile | None, File()] = None,
     video: Annotated[UploadFile | None, File()] = None,
     video_url: Annotated[str | None, Form()] = None,
+    s3_key: Annotated[str | None, Form()] = None,
+    media: Annotated[str | None, Form()] = None,
     slides: Annotated[UploadFile | None, File()] = None,
     no_slides: Annotated[bool, Form()] = False,
     repository=Depends(get_repository),
@@ -60,16 +67,21 @@ async def create_task(
     gemini=Depends(get_gemini),
     video_slides_config: dict = Depends(get_video_slides_config),
 ):
-    sources_count = sum(x is not None for x in (audio, video, video_url))
+    sources_count = sum(x is not None for x in (audio, video, video_url, s3_key))
     if sources_count != 1:
         return JSONResponse(
             status_code=400,
-            content={"detail": "Specify exactly one of: audio, video, video_url"},
+            content={"detail": "Specify exactly one of: audio, video, video_url, s3_key"},
         )
     if video_url is not None and not is_url(video_url):
         return JSONResponse(
             status_code=400,
             content={"detail": "video_url должен быть http/https URL"},
+        )
+    if s3_key is not None and (media or "audio") not in ("audio", "video"):
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "media должен быть audio или video"},
         )
 
     media_upload = audio if audio is not None else video
@@ -79,8 +91,11 @@ async def create_task(
         task_dir.mkdir(parents=True, exist_ok=True)
 
         # Источник: сохраняем загруженный файл (audio/video) на диск; для video_url
-        # файла нет — его скачает ingestor внутри pipeline.
-        if video_url is not None:
+        # файла нет — его скачает ingestor внутри pipeline; для s3_key исходник уже
+        # в MinIO (uploads/) — его скачает pipeline по ключу.
+        if s3_key is not None:
+            source = S3ObjectSource(key=s3_key, media=media or "audio")
+        elif video_url is not None:
             source = VideoUrlSource(url=video_url)
         else:
             media_path = task_dir / (media_upload.filename or "media.bin")
@@ -98,9 +113,12 @@ async def create_task(
             await _save_upload(slides, slides_path)
             document_provider = DocumentSlideProvider(slides_path=slides_path)
 
-        # Видео-провайдер отложен: video_path появится только после ingest.
+        # Видео-провайдер отложен: video_path появится только после ingest/скачивания.
+        is_video_request = (
+            video is not None or video_url is not None or (s3_key is not None and media == "video")
+        )
         video_slide_provider_factory = None
-        if video is not None or video_url is not None:
+        if is_video_request:
 
             def video_slide_provider_factory(local_video: Path):
                 return VideoSlideProvider(
@@ -131,7 +149,9 @@ async def create_task(
 
     # Источник для use-case нужен только ради source.kind (Task.source_kind);
     # реальные пути собираются в enqueue, когда известен task_id.
-    if video_url is not None:
+    if s3_key is not None:
+        kind_source = S3ObjectSource(key=s3_key, media=media or "audio")
+    elif video_url is not None:
         kind_source = VideoUrlSource(url=video_url)
     elif video is not None:
         kind_source = VideoFileSource(path=Path("placeholder.bin"))
