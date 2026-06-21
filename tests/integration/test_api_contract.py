@@ -86,6 +86,7 @@ def test_status_returns_fields(client, repo):
         status=TaskStatus.PROCESSING,
         stage=PipelineStage.STRUCTURIZE,
         progress_pct=55,
+        usage={"transcribe": {"audio_seconds": 90, "provider": "groq", "raw": {}}},
     )
     r = client.get("/api/v1/tasks/t")
     assert r.status_code == 200
@@ -93,6 +94,7 @@ def test_status_returns_fields(client, repo):
     assert body["task_id"] == "t"
     assert body["stage"] == "structurize"
     assert body["progress_pct"] == 55
+    assert body["usage"] == {"transcribe": {"audio_seconds": 90, "provider": "groq", "raw": {}}}
 
 
 def test_transcript_invalid_format_400(client):

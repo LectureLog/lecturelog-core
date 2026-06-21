@@ -12,9 +12,13 @@ class FakeGemini:
     def __init__(self, slides_json: str):
         self._json = slides_json
         self.calls = 0
+        self.on_usage_seen = []
 
-    async def generate(self, models, prepare, *, response_json=False, label="gemini"):
+    async def generate(
+        self, models, prepare, *, response_json=False, label="gemini", on_usage=None
+    ):
         self.calls += 1
+        self.on_usage_seen.append(on_usage)
         return self._json
 
 
@@ -53,10 +57,19 @@ async def test_extracts_one_png_per_slide(tmp_path, monkeypatch):
 
     monkeypatch.setattr(provider, "_ffmpeg_extract_frame", fake_extract)
 
-    out = await provider.get_slides(output_dir=tmp_path / "slides")
+    captured = []
+
+    async def on_usage(payload):
+        captured.append(payload)
+
+    out = await provider.get_slides(output_dir=tmp_path / "slides", on_usage=on_usage)
     assert len(out) == 2
     assert all(p.exists() and p.suffix == ".png" for p in out)
     assert out[0].name == "slide-01.png"
+    # on_usage прокинут в gemini.generate (стадию навешивает оркестратор)
+    fake = provider._gemini
+    assert fake.on_usage_seen
+    assert all(cb is on_usage for cb in fake.on_usage_seen)
 
 
 @pytest.mark.asyncio
@@ -77,7 +90,9 @@ async def test_no_slides_returns_empty_list(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_all_chunks_failed_raises(tmp_path, monkeypatch):
     class FailingGemini:
-        async def generate(self, models, prepare, *, response_json=False, label="gemini"):
+        async def generate(
+            self, models, prepare, *, response_json=False, label="gemini", on_usage=None
+        ):
             raise RuntimeError("gemini down")
 
     provider = VideoSlideProvider(

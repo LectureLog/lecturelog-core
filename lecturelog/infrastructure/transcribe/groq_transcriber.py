@@ -9,11 +9,12 @@ from typing import Any
 
 import httpx
 
-from lecturelog.domain.ports import ProgressCallback, Transcriber
+from lecturelog.domain.ports import ProgressCallback, Transcriber, UsageCallback
 
 logger = logging.getLogger(__name__)
 
 GROQ_TRANSCRIBE_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
+WHISPER_MODEL = "whisper-large-v3"
 
 
 class GroqKeyPool:
@@ -96,6 +97,50 @@ async def _emit_progress(on_progress: ProgressCallback | None, value: int) -> No
         await maybe_awaitable
 
 
+async def _emit_usage(on_usage: UsageCallback | None, payload: dict) -> None:
+    if on_usage is None:
+        return
+    maybe_awaitable = on_usage(payload)
+    if inspect.isawaitable(maybe_awaitable):
+        await maybe_awaitable
+
+
+async def _probe_audio_seconds(audio_path: Path) -> int:
+    """Длительность аудио через ffprobe (паттерн из VideoSlideProvider).
+
+    Зонд best-effort: используется только для usage-метрики и не должен
+    ронять основную транскрибацию. При любом сбое (ffprobe отсутствует,
+    ненулевой returncode, нечисловой вывод) возвращаем 0 и продолжаем работу.
+    """
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "ffprobe",
+            "-v",
+            "quiet",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            str(audio_path),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        out, _ = await proc.communicate()
+        if proc.returncode != 0:
+            # ffprobe завершился с ошибкой — длительность считаем неизвестной (0)
+            logger.warning(
+                "ffprobe завершился с кодом %s, длительность аудио считаем равной 0",
+                proc.returncode,
+            )
+            return 0
+        return int(float(out.decode().strip()))
+    except (OSError, ValueError) as exc:
+        # OSError покрывает отсутствие ffprobe (FileNotFoundError),
+        # ValueError — нечисловой/пустой вывод. Usage best-effort: не падаем.
+        logger.warning("Не удалось определить длительность аудио через ffprobe: %s", exc)
+        return 0
+
+
 def _retry_delay(attempt: int) -> int:
     return 2**attempt * 5
 
@@ -143,7 +188,7 @@ async def _transcribe_chunk(
             # httpx 0.28+ требует передавать multipart-данные единым списком;
             # пересоздаём payload на каждый ретрай, т.к. httpx потребляет его
             files_payload = [
-                ("model", (None, "whisper-large-v3")),
+                ("model", (None, WHISPER_MODEL)),
                 ("response_format", (None, "verbose_json")),
                 ("timestamp_granularities[]", (None, "word")),
                 ("file", (chunk_path.name, file_bytes, "audio/mpeg")),
@@ -213,9 +258,18 @@ class GroqTranscriber(Transcriber):
         audio_path: Path,
         output_dir: Path,
         on_progress: ProgressCallback | None = None,
+        on_usage: UsageCallback | None = None,
     ) -> Path:
         output_dir.mkdir(parents=True, exist_ok=True)
         await _emit_progress(on_progress, 5)
+
+        # Длительность считаем через ffprobe (в ответе Groq её нет) и эмитим
+        # нейтральное зерно один раз. raw оставляем пустым.
+        audio_seconds = await _probe_audio_seconds(audio_path)
+        await _emit_usage(
+            on_usage,
+            {"audio_seconds": audio_seconds, "provider": "groq", "model": WHISPER_MODEL},
+        )
 
         await _run_ffmpeg_segment(audio_path, output_dir)
         chunk_paths = sorted(output_dir.glob("chunk_*.mp3"))

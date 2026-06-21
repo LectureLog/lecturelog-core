@@ -7,6 +7,7 @@ from pathlib import Path
 
 from lecturelog.application.factories import cutter_factory
 from lecturelog.application.progress_plan import ProgressPlan
+from lecturelog.application.usage_accumulator import UsageAccumulator
 from lecturelog.domain.enums import PipelineStage, TaskStatus
 from lecturelog.domain.media_source import MediaSource, is_video_source
 from lecturelog.domain.models import Task
@@ -19,6 +20,7 @@ from lecturelog.domain.ports import (
     TaskRepository,
     Transcriber,
 )
+from lecturelog.infrastructure.slides.video_provider import VideoSlideProvider
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +61,13 @@ class PipelineService:
             task.result_path = result_path
         await self._repo.update(task)
 
+    async def _persist_usage(self, task: Task, acc: UsageAccumulator) -> None:
+        """Гранулярность персиста = стадия: пересчитать total и сохранить usage.
+        НЕ звать на каждый LLM-колбэк (иначе DB-шторм)."""
+        acc.compute_total()
+        task.usage = acc.usage
+        await self._repo.update(task)
+
     async def run(
         self,
         task: Task,
@@ -69,6 +78,22 @@ class PipelineService:
     ) -> Path:
         is_video = is_video_source(source)
         plan = ProgressPlan.for_video() if is_video else self._plan_factory()
+
+        # Накопитель расхода: source-ось известна сразу; slides_origin уточняется
+        # после того, как определится фактически отработавший провайдер слайдов.
+        acc = UsageAccumulator()
+        acc.set_mode(source="video" if is_video else "audio", slides_origin="none")
+
+        # Нейтральное зерно от провайдеров; стадию навешивают эти closure'ы.
+        async def transcribe_usage(payload: dict):
+            acc.record_transcribe(payload)
+
+        async def structurize_usage(payload: dict):
+            acc.record_llm("structurize", payload)
+
+        async def video_slides_usage(payload: dict):
+            acc.record_llm("video_slides", payload)
+
         try:
             # Видео: источник аудио для транскрибации — извлечённая дорожка,
             # источник для нарезки — скачанное/локальное видео. Для аудио оба = source.path.
@@ -126,16 +151,32 @@ class PipelineService:
                 audio_path=audio_for_transcribe,
                 output_dir=work_dir / "transcribe",
                 on_progress=transcribe_progress,
+                on_usage=transcribe_usage,
             )
+            # Инкрементальный персист: transcribe доезжает ДО появления structurize.
+            await self._persist_usage(task, acc)
 
             slide_images: list[Path] = []
             if slide_provider is not None:
+                # Ось slides_origin: video_extracted только для VideoSlideProvider,
+                # иначе document. Завязка на конкретный тип держится в одном месте.
+                is_video_extracted = isinstance(slide_provider, VideoSlideProvider)
+                acc.set_mode(
+                    source="video" if is_video else "audio",
+                    slides_origin="video_extracted" if is_video_extracted else "document",
+                )
                 await self._set(
                     task,
                     stage=PipelineStage.SLIDES,
                     progress=plan.stage_start(PipelineStage.SLIDES),
                 )
-                slide_images = await slide_provider.get_slides(output_dir=work_dir / "slides")
+                slide_images = await slide_provider.get_slides(
+                    output_dir=work_dir / "slides",
+                    on_usage=video_slides_usage if is_video_extracted else None,
+                )
+                # Стадия video_slides существует ⟺ video_extracted.
+                if is_video_extracted:
+                    await self._persist_usage(task, acc)
 
             await self._set(
                 task,
@@ -155,7 +196,9 @@ class PipelineService:
                 slide_images=slide_images,
                 output_dir=work_dir / "structurize",
                 on_progress=structurize_progress,
+                on_usage=structurize_usage,
             )
+            await self._persist_usage(task, acc)
 
             sections = [s for t in topics for s in t.sections]
             cutter = cutter_factory(
@@ -190,6 +233,10 @@ class PipelineService:
             return zip_path
         except Exception as exc:
             logger.warning("Пайплайн упал для task=%s: %s", task.task_id, exc)
+            # Best-effort: пересчитать total и сохранить частичный расход,
+            # чтобы он доехал на FAILED/INTERRUPTED.
+            acc.compute_total()
+            task.usage = acc.usage
             await self._set(
                 task, status=TaskStatus.FAILED, error=f"{exc}\n{traceback.format_exc()}"
             )

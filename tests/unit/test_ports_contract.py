@@ -8,7 +8,24 @@ from lecturelog.domain.ports import (
     Structurizer,
     TaskRepository,
     Transcriber,
+    UsageCallback,
 )
+
+
+def test_usage_callback_is_importable():
+    # UsageCallback должен существовать рядом с ProgressCallback (транспорт on_usage)
+    assert UsageCallback is not None
+
+
+def test_transcriber_impl_without_on_usage_still_instantiates():
+    # обратная совместимость: реализация без on_usage всё ещё валидна
+    from pathlib import Path
+
+    class Legacy(Transcriber):
+        async def transcribe(self, audio_path, output_dir, on_progress=None):
+            return Path("x.srt")
+
+    assert isinstance(Legacy(), Transcriber)
 
 
 @pytest.mark.parametrize(
