@@ -21,6 +21,23 @@ def test_domain_to_row_and_back_preserves_fields():
     assert restored.progress_pct == 15
 
 
+def test_round_trip_preserves_usage():
+    task = Task(
+        task_id="u",
+        source_kind="audio",
+        usage={"transcribe": {"audio_seconds": 120, "provider": "groq"}},
+    )
+    restored = row_to_task(task_to_row(task))
+    assert restored.usage == {"transcribe": {"audio_seconds": 120, "provider": "groq"}}
+
+
+def test_row_to_task_handles_null_usage():
+    # legacy-строки могут иметь usage=None -> должен превратиться в {}
+    row = task_to_row(Task(task_id="n", source_kind="audio"))
+    row.usage = None
+    assert row_to_task(row).usage == {}
+
+
 def test_round_trip_preserves_error_and_result():
     task = Task(
         task_id="x",

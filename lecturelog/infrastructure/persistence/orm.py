@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, Integer, String
+from sqlalchemy import JSON, DateTime, Integer, String
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from lecturelog.domain.enums import PipelineStage, TaskStatus
@@ -23,6 +23,8 @@ class TaskRow(Base):
     progress_pct: Mapped[int] = mapped_column(Integer, default=0)
     error: Mapped[str | None] = mapped_column(String, nullable=True)
     result_path: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Портативный JSON (а не JSONB) — guard-тест строит схему на SQLite.
+    usage: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
@@ -36,6 +38,7 @@ def task_to_row(task: Task) -> TaskRow:
         progress_pct=task.progress_pct,
         error=task.error,
         result_path=task.result_path,
+        usage=task.usage,
         created_at=task.created_at,
         updated_at=task.updated_at,
     )
@@ -50,6 +53,7 @@ def row_to_task(row: TaskRow) -> Task:
         progress_pct=row.progress_pct,
         error=row.error,
         result_path=row.result_path,
+        usage=row.usage or {},
         created_at=row.created_at,
         updated_at=row.updated_at,
     )
