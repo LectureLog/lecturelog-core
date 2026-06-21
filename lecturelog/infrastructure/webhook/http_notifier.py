@@ -32,7 +32,9 @@ def build_signed_request(
     """
     # Ключ "error" присутствует всегда (None если статус не failed) — тело стабильно.
     payload = {"task_id": task_id, "status": status.value, "error": error}
-    body_bytes = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
+    # Контракт кодировки с платформой: UTF-8 + ensure_ascii=False (кириллица в error не эскейпится).
+    body = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+    body_bytes = body.encode("utf-8")
     signature = hmac.new(secret.encode(), body_bytes, hashlib.sha256).hexdigest()
     return body_bytes, signature
 

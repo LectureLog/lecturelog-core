@@ -41,6 +41,32 @@ def test_body_includes_error_on_failed():
     assert parsed["error"] == "boom"
 
 
+def test_body_non_ascii_error_serialization_contract():
+    # task.error бывает на русском: фиксируем явный контракт сериализации с платформой.
+    error_text = "ошибка распознавания"
+    body_bytes, sig = build_signed_request(_URL, _SECRET, "t1", TaskStatus.FAILED, error_text)
+
+    # Подпись детерминирована и совпадает с независимым HMAC от ровно тех же байт.
+    expected_sig = hmac.new(_SECRET.encode(), body_bytes, hashlib.sha256).hexdigest()
+    assert sig == expected_sig
+
+    # Политика сериализации: ensure_ascii=False + UTF-8 (читаемое тело, не \uXXXX-эскейпы).
+    expected_body = json.dumps(
+        {"task_id": "t1", "status": "failed", "error": error_text},
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    assert body_bytes == expected_body
+    # Кириллица присутствует в теле сырыми UTF-8 байтами, а не как ASCII-эскейп.
+    assert error_text.encode("utf-8") in body_bytes
+    assert b"\\u" not in body_bytes
+
+    # Тело декодируется обратно с сохранённым не-ASCII текстом.
+    parsed = json.loads(body_bytes.decode("utf-8"))
+    assert parsed == {"task_id": "t1", "status": "failed", "error": error_text}
+
+
 @pytest.mark.asyncio
 async def test_post_sends_signature_header_and_body():
     captured = {}
