@@ -6,3 +6,5 @@ data/
 docs/plans/
 .pytest_cache/
 *.egg-info/
+
+.worktrees/
