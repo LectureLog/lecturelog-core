@@ -232,12 +232,50 @@ def test_result_not_ready_404(client, repo):
     assert r.json()["detail"] == "Result is not ready"
 
 
-def test_result_returns_zip(client, repo, tmp_path):
-    zip_path = tmp_path / "r.zip"
-    zip_path.write_bytes(b"PK\x03\x04zip")
+def test_result_streams_zip_from_s3(client, repo):
+    # result_path — S3-ключ; эндпоинт скачивает объект из storage и стримит ZIP.
+    client._storage.objects["results/t/result.zip"] = b"PK\x03\x04zip"
     repo.tasks["t"] = Task(
-        task_id="t", source_kind="audio", status=TaskStatus.DONE, result_path=str(zip_path)
+        task_id="t",
+        source_kind="audio",
+        status=TaskStatus.DONE,
+        result_path="results/t/result.zip",
     )
     r = client.get("/api/v1/tasks/t/result")
     assert r.status_code == 200
     assert r.headers["content-type"] == "application/zip"
+    assert r.content == b"PK\x03\x04zip"
+
+
+def test_result_url_with_public_returns_presigned(client_public, repo):
+    client_public._storage.objects["results/t/result.zip"] = b"zip"
+    repo.tasks["t"] = Task(
+        task_id="t",
+        source_kind="audio",
+        status=TaskStatus.DONE,
+        result_path="results/t/result.zip",
+    )
+    r = client_public.get("/api/v1/tasks/t/result-url?filename=Лекция")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["url"].startswith("https://fake/")
+    assert "results/t/result.zip" in body["url"]
+    assert "Лекция.zip" in body["url"]
+    assert "expires_in" in body
+
+
+def test_result_url_without_public_409(client, repo):
+    repo.tasks["t"] = Task(
+        task_id="t",
+        source_kind="audio",
+        status=TaskStatus.DONE,
+        result_path="results/t/result.zip",
+    )
+    r = client.get("/api/v1/tasks/t/result-url?filename=Лекция")
+    assert r.status_code == 409
+
+
+def test_result_url_not_ready_404(client_public, repo):
+    repo.tasks["t"] = Task(task_id="t", source_kind="audio")
+    r = client_public.get("/api/v1/tasks/t/result-url?filename=X")
+    assert r.status_code == 404

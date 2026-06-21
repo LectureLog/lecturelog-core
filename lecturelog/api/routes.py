@@ -18,6 +18,7 @@ from lecturelog.api.dependencies import (
 )
 from lecturelog.api.schemas import (
     CreateTaskResponse,
+    ResultUrlResponse,
     TaskStatusResponse,
     UploadUrlRequest,
     UploadUrlResponse,
@@ -259,12 +260,45 @@ async def get_task_transcript(
 
 
 @router.get("/tasks/{task_id}/result")
-async def get_task_result(task_id: str, repository=Depends(get_repository)):
+async def get_task_result(
+    task_id: str,
+    repository=Depends(get_repository),
+    storage=Depends(get_storage),
+    work_dir: Path = Depends(get_work_dir),
+):
+    # Стрим ZIP из S3: скачиваем объект во временный локальный файл и отдаём.
+    # MinIO клиенту не виден — работает даже без public endpoint (дефолт автономии).
     use_case = GetResultUseCase(repository=repository)
-    path = await use_case.execute(task_id)
-    if not path.exists():
-        return JSONResponse(status_code=404, content={"detail": "Result file not found"})
-    return FileResponse(path=path, filename=path.name, media_type="application/zip")
+    key = await use_case.execute(task_id)
+    tmp = work_dir / "results_tmp" / task_id / "result.zip"
+    await storage.download_file(key, tmp)
+    return FileResponse(path=tmp, filename="result.zip", media_type="application/zip")
+
+
+@router.get("/tasks/{task_id}/result-url", response_model=ResultUrlResponse)
+async def get_task_result_url(
+    task_id: str,
+    filename: str = "result",
+    repository=Depends(get_repository),
+    storage=Depends(get_storage),
+    expires_in: int = Depends(get_presign_expiry),
+):
+    # Presigned GET с override-заголовками (attachment; filename="X.zip" + zip).
+    # Доступен только при заданном public endpoint, иначе 409.
+    use_case = GetResultUseCase(repository=repository)
+    key = await use_case.execute(task_id)
+    url = await storage.presigned_get(
+        key,
+        expires_in=expires_in,
+        download_filename=filename,
+        content_type="application/zip",
+    )
+    if url is None:
+        return JSONResponse(
+            status_code=409,
+            content={"detail": "presigned download недоступен: S3_PUBLIC_ENDPOINT не задан"},
+        )
+    return ResultUrlResponse(url=url, expires_in=expires_in)
 
 
 @router.get("/health")
