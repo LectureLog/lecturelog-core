@@ -5,7 +5,7 @@ import inspect
 import tempfile
 from pathlib import Path
 
-from lecturelog.domain.ports import ProgressCallback, SlideProvider
+from lecturelog.domain.ports import ProgressCallback, SlideProvider, UsageCallback
 
 
 async def _emit_progress(on_progress: ProgressCallback | None, value: int) -> None:
@@ -86,7 +86,10 @@ class DocumentSlideProvider(SlideProvider):
         self,
         output_dir: Path,
         on_progress: ProgressCallback | None = None,
+        on_usage: UsageCallback | None = None,
     ) -> list[Path]:
+        # Документ-провайдер не тратит LLM-токены: on_usage принимается ради
+        # единообразия порта, но не используется (стадия document без by_model).
         output_dir.mkdir(parents=True, exist_ok=True)
         await _emit_progress(on_progress, 10)
 
