@@ -1,7 +1,10 @@
+from pathlib import Path
+
 from lecturelog.infrastructure.transcribe.groq_transcriber import (
     WHISPER_MODEL,
     _build_srt_from_words,
     _emit_usage,
+    _probe_audio_seconds,
 )
 
 
@@ -33,6 +36,52 @@ async def test_emit_usage_passes_payload():
     assert captured == [{"audio_seconds": 42, "provider": "groq", "model": WHISPER_MODEL}]
 
 
+async def test_probe_returns_zero_when_ffprobe_missing(monkeypatch):
+    # ffprobe отсутствует в системе -> create_subprocess_exec кидает FileNotFoundError.
+    # Зонд best-effort: должен вернуть 0, а не ронять транскрибацию.
+    import asyncio
+
+    async def boom(*args, **kwargs):
+        raise FileNotFoundError("ffprobe не найден")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", boom)
+    assert await _probe_audio_seconds(Path("/tmp/a.mp3")) == 0
+
+
+async def test_probe_returns_zero_on_non_numeric_output(monkeypatch):
+    # ffprobe вернул мусор/пустую строку -> float() кинет ValueError -> ожидаем 0.
+    import asyncio
+
+    class FakeProc:
+        returncode = 0
+
+        async def communicate(self):
+            return (b"\n", b"")
+
+    async def fake_exec(*args, **kwargs):
+        return FakeProc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    assert await _probe_audio_seconds(Path("/tmp/a.mp3")) == 0
+
+
+async def test_probe_returns_zero_on_nonzero_returncode(monkeypatch):
+    # ffprobe завершился с ошибкой (returncode != 0) -> зонд возвращает 0.
+    import asyncio
+
+    class FakeProc:
+        returncode = 1
+
+        async def communicate(self):
+            return (b"", b"ffprobe error")
+
+    async def fake_exec(*args, **kwargs):
+        return FakeProc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    assert await _probe_audio_seconds(Path("/tmp/a.mp3")) == 0
+
+
 async def test_transcribe_emits_audio_seconds_usage(tmp_path, monkeypatch):
     from lecturelog.infrastructure.transcribe import groq_transcriber as mod
 
@@ -61,3 +110,36 @@ async def test_transcribe_emits_audio_seconds_usage(tmp_path, monkeypatch):
     await transcriber.transcribe(audio, tmp_path / "out", on_usage=on_usage)
 
     assert captured == [{"audio_seconds": 123, "provider": "groq", "model": WHISPER_MODEL}]
+
+
+async def test_transcribe_continues_when_probe_returns_zero(tmp_path, monkeypatch):
+    # Best-effort: если зонд длительности вернул 0 (сбой ffprobe),
+    # транскрибация не падает, а эмитит usage с audio_seconds=0.
+    from lecturelog.infrastructure.transcribe import groq_transcriber as mod
+
+    audio = tmp_path / "a.mp3"
+    audio.write_bytes(b"x")
+
+    async def fake_segment(audio_path, output_dir):
+        (output_dir / "chunk_000.mp3").write_bytes(b"x")
+
+    async def fake_probe(audio_path):
+        return 0  # имитируем сбой зонда
+
+    async def fake_chunk(*args, **kwargs):
+        return []
+
+    monkeypatch.setattr(mod, "_run_ffmpeg_segment", fake_segment)
+    monkeypatch.setattr(mod, "_probe_audio_seconds", fake_probe)
+    monkeypatch.setattr(mod, "_transcribe_chunk", fake_chunk)
+
+    captured: list[dict] = []
+
+    async def on_usage(payload):
+        captured.append(payload)
+
+    transcriber = mod.GroqTranscriber(["k"])
+    srt_path = await transcriber.transcribe(audio, tmp_path / "out", on_usage=on_usage)
+
+    assert srt_path.exists()
+    assert captured == [{"audio_seconds": 0, "provider": "groq", "model": WHISPER_MODEL}]

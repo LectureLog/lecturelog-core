@@ -106,21 +106,39 @@ async def _emit_usage(on_usage: UsageCallback | None, payload: dict) -> None:
 
 
 async def _probe_audio_seconds(audio_path: Path) -> int:
-    """Длительность аудио через ffprobe (паттерн из VideoSlideProvider)."""
-    proc = await asyncio.create_subprocess_exec(
-        "ffprobe",
-        "-v",
-        "quiet",
-        "-show_entries",
-        "format=duration",
-        "-of",
-        "default=noprint_wrappers=1:nokey=1",
-        str(audio_path),
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    out, _ = await proc.communicate()
-    return int(float(out.decode().strip()))
+    """Длительность аудио через ffprobe (паттерн из VideoSlideProvider).
+
+    Зонд best-effort: используется только для usage-метрики и не должен
+    ронять основную транскрибацию. При любом сбое (ffprobe отсутствует,
+    ненулевой returncode, нечисловой вывод) возвращаем 0 и продолжаем работу.
+    """
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "ffprobe",
+            "-v",
+            "quiet",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            str(audio_path),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        out, _ = await proc.communicate()
+        if proc.returncode != 0:
+            # ffprobe завершился с ошибкой — длительность считаем неизвестной (0)
+            logger.warning(
+                "ffprobe завершился с кодом %s, длительность аудио считаем равной 0",
+                proc.returncode,
+            )
+            return 0
+        return int(float(out.decode().strip()))
+    except (OSError, ValueError) as exc:
+        # OSError покрывает отсутствие ffprobe (FileNotFoundError),
+        # ValueError — нечисловой/пустой вывод. Usage best-effort: не падаем.
+        logger.warning("Не удалось определить длительность аудио через ffprobe: %s", exc)
+        return 0
 
 
 def _retry_delay(attempt: int) -> int:
