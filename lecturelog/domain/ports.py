@@ -4,6 +4,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 
+from lecturelog.domain.enums import TaskStatus
 from lecturelog.domain.media_source import MediaSource
 from lecturelog.domain.models import Section, Task, Topic
 
@@ -90,3 +91,10 @@ class TaskRepository(ABC):
     @abstractmethod
     async def mark_stale_as_interrupted(self) -> int:
         """Пометить все PROCESSING-задачи как INTERRUPTED (при старте). Вернуть кол-во."""
+
+
+class WebhookNotifier(ABC):
+    @abstractmethod
+    async def notify(self, task_id: str, status: TaskStatus, error: str | None = None) -> None:
+        """Best-effort пуш платформе о терминальном статусе задачи.
+        Реализация НЕ должна выбрасывать наружу и НЕ должна блокировать дольше своего таймаута."""
