@@ -9,13 +9,20 @@ from lecturelog.application.factories import cutter_factory
 from lecturelog.application.progress_plan import ProgressPlan
 from lecturelog.application.usage_accumulator import UsageAccumulator
 from lecturelog.domain.enums import PipelineStage, TaskStatus
-from lecturelog.domain.media_source import MediaSource, is_video_source
+from lecturelog.domain.media_source import (
+    AudioSource,
+    MediaSource,
+    S3ObjectSource,
+    VideoFileSource,
+    is_video_source,
+)
 from lecturelog.domain.models import Task
 from lecturelog.domain.ports import (
     Exporter,
     MediaCutter,
     MediaIngestor,
     SlideProvider,
+    Storage,
     Structurizer,
     TaskRepository,
     Transcriber,
@@ -41,6 +48,7 @@ class PipelineService:
         video_cutter: MediaCutter | None = None,
         ingestor: MediaIngestor | None = None,
         webhook_notifier: WebhookNotifier | None = None,
+        storage: Storage | None = None,
     ):
         self._repo = repository
         self._transcriber = transcriber
@@ -52,6 +60,9 @@ class PipelineService:
         self._plan_factory = progress_plan_factory
         # Опциональный нотификатор: None в автономном режиме (без PLATFORM_CALLBACK_URL).
         self._webhook = webhook_notifier
+        # Хранилище лекций: исходник-внутрь (s3_object) и ZIP-наружу (results/).
+        # None оставлен для unit-тестов внутренних стадий (результат тогда — локальный путь).
+        self._storage = storage
 
     async def _set(
         self, task: Task, *, status=None, stage=None, progress=None, error=None, result_path=None
@@ -92,6 +103,17 @@ class PipelineService:
         work_dir: Path,
         video_slide_provider_factory: Callable[[Path], SlideProvider] | None = None,
     ) -> Path:
+        # Граница S3-вход: если источник — ключ в MinIO, скачиваем его в локальный
+        # scratch и нормализуем в обычный локальный Audio/VideoFile-источник.
+        # Дальше пайплайн работает как с приложенным файлом (внутренние стадии не трогаем).
+        if isinstance(source, S3ObjectSource):
+            local_src = work_dir / "src" / Path(source.key).name
+            await self._storage.download_file(source.key, local_src)
+            if source.media == "video":
+                source = VideoFileSource(path=local_src)
+            else:
+                source = AudioSource(path=local_src)
+
         is_video = is_video_source(source)
         plan = ProgressPlan.for_video() if is_video else self._plan_factory()
 
@@ -238,12 +260,22 @@ class PipelineService:
                 media_kind="video" if is_video else "audio",
             )
 
+            # Граница S3-выход: ZIP-результат уезжает в results/<task_id>/result.zip,
+            # result_path хранит S3-ключ. Без storage (unit-тесты внутренних стадий)
+            # result_path остаётся локальным путём.
+            if self._storage is not None:
+                results_key = f"results/{task.task_id}/result.zip"
+                await self._storage.upload_file(zip_path, results_key)
+                result_path = results_key
+            else:
+                result_path = str(zip_path)
+
             await self._set(
                 task,
                 status=TaskStatus.DONE,
                 stage=PipelineStage.EXPORT,
                 progress=100,
-                result_path=str(zip_path),
+                result_path=result_path,
                 error=None,
             )
             return zip_path
