@@ -130,6 +130,22 @@ def test_s3_key_invalid_media_is_400(client):
     assert r.status_code == 400
 
 
+def test_uploads_returns_presigned_put(client_public):
+    r = client_public.post("/api/v1/uploads", json={"filename": "lecture.mp3"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["key"].startswith("uploads/")
+    assert body["key"].endswith("/lecture.mp3")
+    assert body["url"].startswith("https://fake/")
+    assert body["key"] in body["url"]
+    assert "expires_in" in body
+
+
+def test_uploads_409_without_public(client):
+    r = client.post("/api/v1/uploads", json={"filename": "lecture.mp3"})
+    assert r.status_code == 409
+
+
 def test_status_404_for_unknown(client):
     r = client.get("/api/v1/tasks/nonexistent")
     assert r.status_code == 404

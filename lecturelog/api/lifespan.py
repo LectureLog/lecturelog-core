@@ -91,6 +91,7 @@ async def lifespan(app: FastAPI):
     app.state.repository = repo
     app.state.worker = worker
     app.state.storage = storage
+    app.state.presign_expiry = cfg.s3.presign_expiry
     # Локальный эфемерный scratch для внутренних стадий пайплайна (не S3).
     app.state.work_dir = Path(os.getenv("WORK_DIR", "/app/data"))
     # Для отложенного создания VideoSlideProvider в роуте (video_path появляется

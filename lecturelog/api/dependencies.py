@@ -25,6 +25,11 @@ def get_storage(request: Request) -> Storage:
     return request.app.state.storage
 
 
+def get_presign_expiry(request: Request) -> int:
+    # Срок жизни presigned-ссылок; в тестах app.state может не содержать config.
+    return getattr(request.app.state, "presign_expiry", 3600)
+
+
 def get_gemini(request: Request):
     return request.app.state.gemini
 

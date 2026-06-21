@@ -2,18 +2,26 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Annotated
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
 
 from lecturelog.api.dependencies import (
     get_gemini,
+    get_presign_expiry,
     get_repository,
+    get_storage,
     get_video_slides_config,
     get_work_dir,
     get_worker,
 )
-from lecturelog.api.schemas import CreateTaskResponse, TaskStatusResponse
+from lecturelog.api.schemas import (
+    CreateTaskResponse,
+    TaskStatusResponse,
+    UploadUrlRequest,
+    UploadUrlResponse,
+)
 from lecturelog.application.use_cases.create_task import CreateTaskUseCase
 from lecturelog.application.use_cases.get_result import GetResultUseCase
 from lecturelog.application.use_cases.get_status import GetStatusUseCase
@@ -49,6 +57,13 @@ async def _save_upload(upload: UploadFile, target: Path) -> None:
 
 def _transcript_srt_path(work_dir: Path, task_id: str) -> Path:
     return work_dir / task_id / "transcribe" / "transcript.srt"
+
+
+def _safe_filename(filename: str) -> str:
+    # Берём только basename и режем потенциально опасные сепараторы,
+    # чтобы клиент не задал ключ вне своего uploads/<uuid>/ префикса.
+    name = Path(filename).name.replace("\\", "_")
+    return name or "upload.bin"
 
 
 @router.post("/tasks", response_model=CreateTaskResponse)
@@ -161,6 +176,23 @@ async def create_task(
     use_case = CreateTaskUseCase(repository=repository, enqueue=enqueue)
     task_id = await use_case.execute(source=kind_source, slides_path=None)
     return CreateTaskResponse(task_id=task_id)
+
+
+@router.post("/uploads", response_model=UploadUrlResponse)
+async def create_upload_url(
+    body: UploadUrlRequest,
+    storage=Depends(get_storage),
+    expires_in: int = Depends(get_presign_expiry),
+):
+    # Презентуем платформе presigned PUT в uploads/<uuid>/<safe-filename>.
+    key = f"uploads/{uuid4().hex}/{_safe_filename(body.filename)}"
+    url = await storage.presigned_put(key, expires_in=expires_in)
+    if url is None:
+        return JSONResponse(
+            status_code=409,
+            content={"detail": "presigned upload недоступен: S3_PUBLIC_ENDPOINT не задан"},
+        )
+    return UploadUrlResponse(key=key, url=url, expires_in=expires_in)
 
 
 @router.get("/tasks/{task_id}", response_model=TaskStatusResponse)
