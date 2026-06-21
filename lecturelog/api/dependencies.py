@@ -5,7 +5,7 @@ from pathlib import Path
 from fastapi import Request
 
 from lecturelog.application.worker import PipelineWorker
-from lecturelog.domain.ports import TaskRepository
+from lecturelog.domain.ports import Storage, TaskRepository
 
 
 def get_repository(request: Request) -> TaskRepository:
@@ -16,8 +16,13 @@ def get_worker(request: Request) -> PipelineWorker:
     return request.app.state.worker
 
 
-def get_upload_dir(request: Request) -> Path:
-    return request.app.state.upload_dir
+def get_work_dir(request: Request) -> Path:
+    # Локальный эфемерный scratch для внутренних стадий пайплайна (не S3).
+    return request.app.state.work_dir
+
+
+def get_storage(request: Request) -> Storage:
+    return request.app.state.storage
 
 
 def get_gemini(request: Request):

@@ -32,13 +32,17 @@ def client(tmp_path):
         async def enqueue(self, job):
             self.jobs.append(job)
 
+    from tests.support.fake_storage import FakeStorage
+
     repo = InMemoryRepo()
     worker = RecordingWorker()
+    storage = FakeStorage(public=False)
     # Без контекст-менеджера TestClient: не запускаем реальный lifespan
     # (Postgres/Gemini), проверяем только HTTP-контракт через overrides + app.state.
     app.dependency_overrides[deps.get_repository] = lambda: repo
     app.dependency_overrides[deps.get_worker] = lambda: worker
-    app.dependency_overrides[deps.get_upload_dir] = lambda: tmp_path
+    app.dependency_overrides[deps.get_work_dir] = lambda: tmp_path
+    app.dependency_overrides[deps.get_storage] = lambda: storage
     app.dependency_overrides[deps.get_gemini] = lambda: object()
     app.dependency_overrides[deps.get_video_slides_config] = lambda: {
         "models": ["m"],
@@ -47,7 +51,8 @@ def client(tmp_path):
     }
     app.state.repository = repo
     app.state.worker = worker
-    app.state.upload_dir = tmp_path
+    app.state.work_dir = tmp_path
+    app.state.storage = storage
     c = TestClient(app)
     c._repo = repo
     c._worker = worker

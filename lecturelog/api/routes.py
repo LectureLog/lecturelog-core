@@ -9,8 +9,8 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from lecturelog.api.dependencies import (
     get_gemini,
     get_repository,
-    get_upload_dir,
     get_video_slides_config,
+    get_work_dir,
     get_worker,
 )
 from lecturelog.api.schemas import CreateTaskResponse, TaskStatusResponse
@@ -42,8 +42,8 @@ async def _save_upload(upload: UploadFile, target: Path) -> None:
             f.write(chunk)
 
 
-def _transcript_srt_path(upload_dir: Path, task_id: str) -> Path:
-    return upload_dir / task_id / "transcribe" / "transcript.srt"
+def _transcript_srt_path(work_dir: Path, task_id: str) -> Path:
+    return work_dir / task_id / "transcribe" / "transcript.srt"
 
 
 @router.post("/tasks", response_model=CreateTaskResponse)
@@ -56,7 +56,7 @@ async def create_task(
     no_slides: Annotated[bool, Form()] = False,
     repository=Depends(get_repository),
     worker=Depends(get_worker),
-    upload_dir: Path = Depends(get_upload_dir),
+    work_dir: Path = Depends(get_work_dir),
     gemini=Depends(get_gemini),
     video_slides_config: dict = Depends(get_video_slides_config),
 ):
@@ -75,7 +75,7 @@ async def create_task(
     media_upload = audio if audio is not None else video
 
     async def enqueue(task_id: str) -> None:
-        task_dir = upload_dir / task_id
+        task_dir = work_dir / task_id
         task_dir.mkdir(parents=True, exist_ok=True)
 
         # Источник: сохраняем загруженный файл (audio/video) на диск; для video_url
@@ -155,7 +155,7 @@ async def get_task_transcript(
     task_id: str,
     format: str = "srt",
     repository=Depends(get_repository),
-    upload_dir: Path = Depends(get_upload_dir),
+    work_dir: Path = Depends(get_work_dir),
 ):
     # Валидация формата заранее, до проверки статуса задачи.
     if format not in ("srt", "txt"):
@@ -166,7 +166,7 @@ async def get_task_transcript(
 
     use_case = GetTranscriptUseCase(
         repository=repository,
-        srt_path_for=lambda tid: _transcript_srt_path(upload_dir, tid),
+        srt_path_for=lambda tid: _transcript_srt_path(work_dir, tid),
     )
     task = await repository.get(task_id)
     if task is None:

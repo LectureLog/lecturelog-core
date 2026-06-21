@@ -5,6 +5,7 @@ from lecturelog.api import dependencies as deps
 from lecturelog.api.app import create_app
 from lecturelog.domain.enums import PipelineStage, TaskStatus
 from lecturelog.domain.models import Task
+from tests.support.fake_storage import FakeStorage
 
 
 class InMemoryRepo:
@@ -37,8 +38,7 @@ def repo():
     return InMemoryRepo()
 
 
-@pytest.fixture
-def client(repo, tmp_path):
+def _build_client(repo, tmp_path, storage):
     # Собираем приложение без реального lifespan: вешаем зависимости
     # через dependency_overrides, чтобы тест проверял HTTP-контракт,
     # а не реальную обработку (Groq/Gemini/Postgres).
@@ -46,15 +46,32 @@ def client(repo, tmp_path):
     worker = NoopWorker()
     app.dependency_overrides[deps.get_repository] = lambda: repo
     app.dependency_overrides[deps.get_worker] = lambda: worker
-    app.dependency_overrides[deps.get_upload_dir] = lambda: tmp_path
+    app.dependency_overrides[deps.get_work_dir] = lambda: tmp_path
+    app.dependency_overrides[deps.get_storage] = lambda: storage
     app.state.repository = repo
     app.state.worker = worker
-    app.state.upload_dir = tmp_path
+    app.state.work_dir = tmp_path
+    app.state.storage = storage
     app.state.gemini = object()
     app.state.video_slides_models = ["m"]
     app.state.concurrency_video = 1
     app.state.prompts_dir = tmp_path
-    return TestClient(app)
+    client = TestClient(app)
+    client._worker = worker
+    client._storage = storage
+    return client
+
+
+@pytest.fixture
+def client(repo, tmp_path):
+    # Дефолт автономии: public=False (presigned наружу выключен).
+    return _build_client(repo, tmp_path, FakeStorage(public=False))
+
+
+@pytest.fixture
+def client_public(repo, tmp_path):
+    # Платформенный режим: public=True (presigned PUT/GET доступны).
+    return _build_client(repo, tmp_path, FakeStorage(public=True))
 
 
 def test_health_ok(client):
