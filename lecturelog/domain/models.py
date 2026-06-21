@@ -35,5 +35,6 @@ class Task(BaseModel):
     progress_pct: int = 0
     error: str | None = None
     result_path: str | None = None
+    usage: dict = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=_utcnow)
     updated_at: datetime = Field(default_factory=_utcnow)

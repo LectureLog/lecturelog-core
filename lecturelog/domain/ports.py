@@ -8,12 +8,18 @@ from lecturelog.domain.media_source import MediaSource
 from lecturelog.domain.models import Section, Task, Topic
 
 ProgressCallback = Callable[[int], Awaitable[None] | None]
+# Нейтральное зерно расхода ресурсов (audio_seconds / tokens). Стадию навешивает оркестратор.
+UsageCallback = Callable[[dict], Awaitable[None] | None]
 
 
 class Transcriber(ABC):
     @abstractmethod
     async def transcribe(
-        self, audio_path: Path, output_dir: Path, on_progress: ProgressCallback | None = None
+        self,
+        audio_path: Path,
+        output_dir: Path,
+        on_progress: ProgressCallback | None = None,
+        on_usage: UsageCallback | None = None,
     ) -> Path:
         """Аудио -> путь к SRT-файлу."""
 
@@ -21,7 +27,10 @@ class Transcriber(ABC):
 class SlideProvider(ABC):
     @abstractmethod
     async def get_slides(
-        self, output_dir: Path, on_progress: ProgressCallback | None = None
+        self,
+        output_dir: Path,
+        on_progress: ProgressCallback | None = None,
+        on_usage: UsageCallback | None = None,
     ) -> list[Path]:
         """Вернуть список путей к PNG слайдов. Реализация знает источник (PDF/PPTX или видео)."""
 
@@ -34,6 +43,7 @@ class Structurizer(ABC):
         slide_images: list[Path],
         output_dir: Path,
         on_progress: ProgressCallback | None = None,
+        on_usage: UsageCallback | None = None,
     ) -> list[Topic]:
         """SRT + слайды -> структура тем/подтем с привязкой слайдов."""
 

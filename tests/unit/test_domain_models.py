@@ -23,6 +23,18 @@ def test_task_defaults_to_pending_zero_progress():
     assert task.result_path is None
 
 
+def test_task_usage_defaults_to_empty_dict():
+    task = Task(task_id="abc", source_kind="audio")
+    assert task.usage == {}
+
+
+def test_task_usage_default_not_shared_between_instances():
+    a = Task(task_id="a", source_kind="audio")
+    b = Task(task_id="b", source_kind="audio")
+    a.usage["transcribe"] = {"audio_seconds": 10}
+    assert b.usage == {}
+
+
 def test_task_accepts_stage_and_progress():
     task = Task(
         task_id="abc",
