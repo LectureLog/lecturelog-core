@@ -19,6 +19,7 @@ from lecturelog.api.dependencies import (
 )
 from lecturelog.api.schemas import (
     CreateTaskResponse,
+    ErrorResponse,
     ResultUrlResponse,
     TaskStatusResponse,
     UploadUrlRequest,
@@ -68,7 +69,16 @@ def _safe_filename(filename: str) -> str:
     return name or "upload.bin"
 
 
-@router.post("/tasks", response_model=CreateTaskResponse)
+@router.post(
+    "/tasks",
+    response_model=CreateTaskResponse,
+    summary="Создать задачу обработки лекции",
+    description="Принимает ровно один источник: audio | video | video_url | s3_key.",
+    tags=["tasks"],
+    responses={
+        400: {"model": ErrorResponse, "description": "Некорректный или неоднозначный источник"}
+    },
+)
 async def create_task(
     request: Request,
     audio: Annotated[UploadFile | None, File()] = None,
@@ -190,7 +200,19 @@ async def create_task(
     return CreateTaskResponse(task_id=task_id)
 
 
-@router.post("/uploads", response_model=UploadUrlResponse)
+@router.post(
+    "/uploads",
+    response_model=UploadUrlResponse,
+    summary="Получить presigned PUT для загрузки исходника",
+    tags=["tasks"],
+    responses={
+        400: {"model": ErrorResponse, "description": "Некорректный источник (InvalidSource)"},
+        409: {
+            "model": ErrorResponse,
+            "description": "Presigned upload недоступен: S3_PUBLIC_ENDPOINT не задан",
+        },
+    },
+)
 async def create_upload_url(
     body: UploadUrlRequest,
     storage=Depends(get_storage),
@@ -211,6 +233,9 @@ async def create_upload_url(
     "/tasks/{task_id}",
     response_model=TaskStatusResponse,
     response_model_exclude_none=True,
+    summary="Статус задачи и накопленный usage",
+    tags=["tasks"],
+    responses={404: {"model": ErrorResponse, "description": "Task not found"}},
 )
 async def get_task_status(task_id: str, repository=Depends(get_repository)):
     use_case = GetStatusUseCase(repository=repository)
@@ -218,7 +243,21 @@ async def get_task_status(task_id: str, repository=Depends(get_repository)):
     return TaskStatusResponse.from_task(task)
 
 
-@router.get("/tasks/{task_id}/transcript")
+@router.get(
+    "/tasks/{task_id}/transcript",
+    summary="Скачать транскрипт (srt|txt)",
+    tags=["tasks"],
+    responses={
+        200: {
+            "content": {"application/x-subrip": {}, "text/plain": {}},
+            "description": "Готовый транскрипт файлом",
+        },
+        202: {"description": "Транскрипт ещё не готов, повторить позже"},
+        400: {"model": ErrorResponse, "description": "Недопустимый format"},
+        404: {"model": ErrorResponse, "description": "Задача не найдена"},
+        409: {"model": ErrorResponse, "description": "Транскрибация завершилась ошибкой"},
+    },
+)
 async def get_task_transcript(
     task_id: str,
     format: str = "srt",
@@ -274,7 +313,15 @@ async def get_task_transcript(
     )
 
 
-@router.get("/tasks/{task_id}/result")
+@router.get(
+    "/tasks/{task_id}/result",
+    summary="Стрим готового ZIP-результата из хранилища",
+    tags=["tasks"],
+    responses={
+        200: {"content": {"application/zip": {}}, "description": "ZIP с результатом"},
+        404: {"model": ErrorResponse, "description": "Задача не найдена или результат не готов"},
+    },
+)
 async def get_task_result(
     task_id: str,
     repository=Depends(get_repository),
@@ -298,7 +345,19 @@ async def get_task_result(
     )
 
 
-@router.get("/tasks/{task_id}/result-url", response_model=ResultUrlResponse)
+@router.get(
+    "/tasks/{task_id}/result-url",
+    response_model=ResultUrlResponse,
+    summary="Presigned GET на готовый ZIP",
+    tags=["tasks"],
+    responses={
+        404: {"model": ErrorResponse, "description": "Задача не найдена или результат не готов"},
+        409: {
+            "model": ErrorResponse,
+            "description": "Presigned download недоступен: S3_PUBLIC_ENDPOINT не задан",
+        },
+    },
+)
 async def get_task_result_url(
     task_id: str,
     filename: str = "result",
@@ -324,6 +383,6 @@ async def get_task_result_url(
     return ResultUrlResponse(url=url, expires_in=expires_in)
 
 
-@router.get("/health")
+@router.get("/health", summary="Проверка живости сервиса", tags=["health"])
 async def health():
     return {"status": "ok"}
