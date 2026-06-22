@@ -7,6 +7,7 @@ from lecturelog.application.progress_plan import ProgressPlan
 from lecturelog.domain.enums import PipelineStage, TaskStatus
 from lecturelog.domain.media_source import VideoFileSource, VideoUrlSource
 from lecturelog.domain.models import Section, Task, Topic
+from lecturelog.domain.ports import ExportResult
 from lecturelog.infrastructure.slides.video_provider import VideoSlideProvider
 
 
@@ -81,17 +82,29 @@ class RecordingCutter:
 
     async def cut(self, source_path, sections, output_dir):
         self.source_arg = source_path
-        return [Path(f"{self.tag}_{i}") for i in range(len(sections))]
+        # Создаём реальные файлы фрагментов на диске (нужно для раскладки/zip).
+        out = Path(output_dir)
+        out.mkdir(parents=True, exist_ok=True)
+        frags = []
+        for i in range(len(sections)):
+            p = out / f"{self.tag}_{i}.mp4"
+            p.write_bytes(b"frag")
+            frags.append(p)
+        return frags
 
 
 class FakeExporter:
-    def __init__(self, zip_path):
-        self._zip = zip_path
+    """Раскладывает минимальный output/ на диск и возвращает ExportResult (без zip)."""
+
+    def __init__(self):
         self.media_kind = None
 
     async def export(self, topics, media_fragments, slide_images, output_dir, media_kind):
         self.media_kind = media_kind
-        return self._zip
+        output_root = Path(output_dir) / "output"
+        output_root.mkdir(parents=True, exist_ok=True)
+        (output_root / "конспект.md").write_text("# конспект", encoding="utf-8")
+        return ExportResult(output_root=output_root, media_targets=[], slide_targets=[])
 
 
 def _service(repo, ingestor, transcriber, structurizer, audio_cutter, video_cutter, exporter):
@@ -114,14 +127,12 @@ async def test_video_pipeline_ingests_extracts_and_completes(tmp_path):
     await repo.create(task)
     sec = Section(title="s", start="0:00", end="5:00", content="c", slide_indices=[])
     topics = [Topic(title="T", start="0:00", end="5:00", sections=[sec], slide_indices=[])]
-    zip_path = tmp_path / "r.zip"
-    zip_path.write_bytes(b"z")
 
     ingestor = FakeIngestor()
     transcriber = FakeTranscriber()
     audio_cutter = RecordingCutter("audio")
     video_cutter = RecordingCutter("video")
-    exporter = FakeExporter(zip_path)
+    exporter = FakeExporter()
     service = _service(
         repo, ingestor, transcriber, FakeStructurizer(topics), audio_cutter, video_cutter, exporter
     )
@@ -150,8 +161,6 @@ async def test_video_stages_include_ingest_and_extract(tmp_path):
     await repo.create(task)
     sec = Section(title="s", start="0:00", end="5:00", content="c", slide_indices=[])
     topics = [Topic(title="T", start="0:00", end="5:00", sections=[sec], slide_indices=[])]
-    zip_path = tmp_path / "r.zip"
-    zip_path.write_bytes(b"z")
     service = _service(
         repo,
         FakeIngestor(),
@@ -159,7 +168,7 @@ async def test_video_stages_include_ingest_and_extract(tmp_path):
         FakeStructurizer(topics),
         RecordingCutter("audio"),
         RecordingCutter("video"),
-        FakeExporter(zip_path),
+        FakeExporter(),
     )
     await service.run(
         task=task,
@@ -198,8 +207,6 @@ async def test_video_extracted_mode_records_video_slides_stage(tmp_path):
     await repo.create(task)
     sec = Section(title="s", start="0:00", end="5:00", content="c", slide_indices=[])
     topics = [Topic(title="T", start="0:00", end="5:00", sections=[sec], slide_indices=[])]
-    zip_path = tmp_path / "r.zip"
-    zip_path.write_bytes(b"z")
     service = _service(
         repo,
         FakeIngestor(),
@@ -207,7 +214,7 @@ async def test_video_extracted_mode_records_video_slides_stage(tmp_path):
         FakeStructurizer(topics),
         RecordingCutter("audio"),
         RecordingCutter("video"),
-        FakeExporter(zip_path),
+        FakeExporter(),
     )
 
     def vsp_factory(_video_path):

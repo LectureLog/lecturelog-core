@@ -61,19 +61,20 @@ async def test_get_result_missing_raises():
 
 
 @pytest.mark.asyncio
-async def test_get_result_returns_key_when_ready():
-    # Возвращается S3-ключ результата как строка (скачивание делает слой API).
+async def test_get_result_returns_prefix_when_ready():
+    # Возвращается префикс папки результата (results/<id>/); листинг/сборку zip
+    # делает слой API через порт Storage.
     repo = InMemoryRepo()
     await repo.create(
         Task(
             task_id="t",
             source_kind="audio",
             status=TaskStatus.DONE,
-            result_path="results/t/result.zip",
+            result_path="results/t/",
         )
     )
     uc = GetResultUseCase(repository=repo)
-    assert await uc.execute("t") == "results/t/result.zip"
+    assert await uc.execute("t") == "results/t/"
 
 
 @pytest.mark.asyncio

@@ -57,14 +57,12 @@ def _topics():
 
 
 async def _run_ok(repo, tmp_path, task, notifier):
-    zip_path = tmp_path / "result.zip"
-    zip_path.write_bytes(b"zip")
     service = _service(
         repo,
         FakeTranscriber(tmp_path / "t.srt"),
         FakeStructurizer(_topics()),
         FakeCutter(),
-        FakeExporter(zip_path),
+        FakeExporter(),
         notifier,
     )
     await service.run(
@@ -103,7 +101,7 @@ async def test_webhook_fires_on_failed_with_error(tmp_path):
         FailingTranscriber(),
         FakeStructurizer([]),
         FakeCutter(),
-        FakeExporter(tmp_path / "z.zip"),
+        FakeExporter(),
         notifier,
     )
     with pytest.raises(RuntimeError):
@@ -141,15 +139,13 @@ async def test_no_notifier_means_no_webhook_and_normal_completion(tmp_path):
     repo = InMemoryRepo()
     task = Task(task_id="w4", source_kind="audio")
     await repo.create(task)
-    zip_path = tmp_path / "result.zip"
-    zip_path.write_bytes(b"zip")
     # webhook_notifier=None (автономный режим) — задача должна завершиться DONE без ошибок.
     service = PipelineService(
         repository=repo,
         transcriber=FakeTranscriber(tmp_path / "t.srt"),
         structurizer=FakeStructurizer(_topics()),
         audio_cutter=FakeCutter(),
-        exporter=FakeExporter(zip_path),
+        exporter=FakeExporter(),
         progress_plan_factory=ProgressPlan.for_audio,
     )
     await service.run(
@@ -167,14 +163,12 @@ async def test_failing_notifier_does_not_break_pipeline(tmp_path):
     repo = InMemoryRepo()
     task = Task(task_id="w5", source_kind="audio")
     await repo.create(task)
-    zip_path = tmp_path / "result.zip"
-    zip_path.write_bytes(b"zip")
     service = _service(
         repo,
         FakeTranscriber(tmp_path / "t.srt"),
         FakeStructurizer(_topics()),
         FakeCutter(),
-        FakeExporter(zip_path),
+        FakeExporter(),
         BoomNotifier(),
     )
     # Падающий нотификатор не должен ронять run.
@@ -193,14 +187,12 @@ async def test_timeouting_notifier_does_not_delay_or_break(tmp_path):
     repo = InMemoryRepo()
     task = Task(task_id="w6", source_kind="audio")
     await repo.create(task)
-    zip_path = tmp_path / "result.zip"
-    zip_path.write_bytes(b"zip")
     service = _service(
         repo,
         FakeTranscriber(tmp_path / "t.srt"),
         FakeStructurizer(_topics()),
         FakeCutter(),
-        FakeExporter(zip_path),
+        FakeExporter(),
         TimeoutNotifier(),
     )
     # TimeoutError тоже глушится в _set — run завершается DONE.
@@ -219,14 +211,12 @@ async def test_usage_still_persisted_with_notifier(tmp_path):
     repo = InMemoryRepo()
     task = Task(task_id="w7", source_kind="audio")
     await repo.create(task)
-    zip_path = tmp_path / "result.zip"
-    zip_path.write_bytes(b"zip")
     service = _service(
         repo,
         FakeTranscriber(tmp_path / "t.srt"),
         FakeStructurizer(_topics()),
         FakeCutter(),
-        FakeExporter(zip_path),
+        FakeExporter(),
         RecordingNotifier(),
     )
     await service.run(
@@ -256,7 +246,7 @@ async def test_webhook_failed_carries_error_code(tmp_path):
         FailingRateLimitTranscriber(),
         FakeStructurizer([]),
         FakeCutter(),
-        FakeExporter(tmp_path / "z.zip"),
+        FakeExporter(),
         notifier,
     )
     with pytest.raises(RuntimeError):

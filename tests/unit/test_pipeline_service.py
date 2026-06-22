@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pytest
@@ -7,6 +8,8 @@ from lecturelog.application.progress_plan import ProgressPlan
 from lecturelog.domain.enums import ErrorCode, TaskStatus
 from lecturelog.domain.media_source import AudioSource, S3ObjectSource
 from lecturelog.domain.models import Section, Task, Topic
+from lecturelog.domain.ports import ExportResult
+from lecturelog.infrastructure.export.obsidian_exporter import ObsidianExporter
 from tests.support.fake_storage import FakeStorage
 
 
@@ -59,15 +62,31 @@ class FakeStructurizer:
 
 class FakeCutter:
     async def cut(self, source_path, sections, output_dir):
-        return [Path(f"frag_{i}.mp3") for i in range(len(sections))]
+        # Создаём реальные файлы фрагментов на диске (нужно для раскладки/заливки).
+        out = Path(output_dir)
+        out.mkdir(parents=True, exist_ok=True)
+        frags = []
+        for i in range(len(sections)):
+            p = out / f"frag_{i}.mp3"
+            p.write_bytes(b"frag")
+            frags.append(p)
+        return frags
 
 
 class FakeExporter:
-    def __init__(self, zip_path):
-        self._zip = zip_path
+    """Раскладывает минимальный output/ на диск и возвращает ExportResult (без zip)."""
 
     async def export(self, topics, media_fragments, slide_images, output_dir, media_kind):
-        return self._zip
+        output_root = Path(output_dir) / "output"
+        media_dir = output_root / media_kind
+        media_dir.mkdir(parents=True, exist_ok=True)
+        (output_root / "конспект.md").write_text("# конспект", encoding="utf-8")
+        media_targets = []
+        for i, _frag in enumerate(media_fragments):
+            t = media_dir / f"{i + 1:02d}-s.mp3"
+            t.write_bytes(b"m")
+            media_targets.append(t)
+        return ExportResult(output_root=output_root, media_targets=media_targets, slide_targets=[])
 
 
 class FailingTranscriber:
@@ -92,21 +111,19 @@ def _topics_single():
 
 
 @pytest.mark.asyncio
-async def test_zip_uploaded_to_s3_and_result_path_is_key(tmp_path):
-    # При наличии storage ZIP заливается в results/<task_id>/result.zip,
-    # а result_path = этот S3-ключ (не локальный путь).
+async def test_output_uploaded_as_objects_and_structure_written(tmp_path):
+    # При наличии storage output/ заливается отдельными объектами +
+    # structure.json; result_path = префикс results/<task_id>/.
     repo = InMemoryRepo()
     task = Task(task_id="s1", source_kind="audio")
     await repo.create(task)
-    zip_path = tmp_path / "result.zip"
-    zip_path.write_bytes(b"PK-zip-bytes")
     storage = FakeStorage()
     service = PipelineService(
         repository=repo,
         transcriber=FakeTranscriber(tmp_path / "t.srt"),
         structurizer=FakeStructurizer(_topics_single()),
         audio_cutter=FakeCutter(),
-        exporter=FakeExporter(zip_path),
+        exporter=ObsidianExporter(),
         progress_plan_factory=ProgressPlan.for_audio,
         storage=storage,
     )
@@ -114,12 +131,23 @@ async def test_zip_uploaded_to_s3_and_result_path_is_key(tmp_path):
         task=task,
         source=AudioSource(path=tmp_path / "a.mp3"),
         slide_provider=None,
-        work_dir=tmp_path,
+        work_dir=tmp_path / "work",
     )
     final = await repo.get("s1")
     assert final.status == TaskStatus.DONE
-    assert final.result_path == "results/s1/result.zip"
-    assert storage.objects["results/s1/result.zip"] == b"PK-zip-bytes"
+    assert final.result_path == "results/s1/"
+
+    keys = await storage.list_keys("results/s1/")
+    # Объекты залиты пофайлово; единый zip больше не хранится.
+    assert "results/s1/output/конспект.md" in keys
+    assert "results/s1/output/structure.json" in keys
+    assert "results/s1/result.zip" not in keys
+
+    # ХРУПКИЙ ИНВАРИАНТ: ключи в structure.json совпадают с реально залитыми объектами.
+    structure = json.loads(storage.objects["results/s1/output/structure.json"])
+    subtopic = structure["sections"][0]["subtopics"][0]
+    assert subtopic["media"]["key"] in keys
+    assert subtopic["content_md"]  # content_md не пуст
 
 
 @pytest.mark.asyncio
@@ -131,8 +159,6 @@ async def test_s3_object_source_downloaded_before_pipeline(tmp_path):
     await repo.create(task)
     storage = FakeStorage()
     storage.objects["uploads/abc/lecture.mp3"] = b"audio-bytes"
-    zip_path = tmp_path / "result.zip"
-    zip_path.write_bytes(b"z")
 
     transcriber = FakeTranscriber(tmp_path / "t.srt")
     received = {}
@@ -149,7 +175,7 @@ async def test_s3_object_source_downloaded_before_pipeline(tmp_path):
         transcriber=transcriber,
         structurizer=FakeStructurizer(_topics_single()),
         audio_cutter=FakeCutter(),
-        exporter=FakeExporter(zip_path),
+        exporter=FakeExporter(),
         progress_plan_factory=ProgressPlan.for_audio,
         storage=storage,
     )
@@ -169,32 +195,37 @@ async def test_s3_object_source_downloaded_before_pipeline(tmp_path):
 
 @pytest.mark.asyncio
 async def test_audio_pipeline_completes_and_sets_done(tmp_path):
+    # Автономный режим (storage=None): результат — локальный zip с output/...
+    import zipfile
+
     repo = InMemoryRepo()
     task = Task(task_id="t1", source_kind="audio")
     await repo.create(task)
     sec = Section(title="s", start="0:00", end="5:00", content="c", slide_indices=[])
     topics = [Topic(title="T", start="0:00", end="5:00", sections=[sec], slide_indices=[])]
-    zip_path = tmp_path / "result.zip"
-    zip_path.write_bytes(b"zip")
 
     service = _service(
         repo,
         FakeTranscriber(tmp_path / "t.srt"),
         FakeStructurizer(topics),
         FakeCutter(),
-        FakeExporter(zip_path),
+        ObsidianExporter(),
     )
     await service.run(
         task=task,
         source=AudioSource(path=tmp_path / "a.mp3"),
         slide_provider=None,
-        work_dir=tmp_path,
+        work_dir=tmp_path / "work",
     )
 
     final = await repo.get("t1")
     assert final.status == TaskStatus.DONE
     assert final.progress_pct == 100
-    assert final.result_path == str(zip_path)
+    assert final.result_path.endswith("result.zip")
+    with zipfile.ZipFile(final.result_path) as zf:
+        names = zf.namelist()
+    assert "output/конспект.md" in names
+    assert "output/structure.json" in names
 
 
 @pytest.mark.asyncio
@@ -207,7 +238,7 @@ async def test_critical_failure_marks_task_failed(tmp_path):
         FailingTranscriber(),
         FakeStructurizer([]),
         FakeCutter(),
-        FakeExporter(tmp_path / "z.zip"),
+        FakeExporter(),
     )
     with pytest.raises(RuntimeError):
         await service.run(
@@ -238,14 +269,12 @@ async def test_progress_is_monotonic_and_persisted(tmp_path):
     await repo.create(task)
     sec = Section(title="s", start="0:00", end="5:00", content="c", slide_indices=[])
     topics = [Topic(title="T", start="0:00", end="5:00", sections=[sec], slide_indices=[])]
-    zip_path = tmp_path / "r.zip"
-    zip_path.write_bytes(b"z")
     service = _service(
         repo,
         FakeTranscriber(tmp_path / "t.srt"),
         FakeStructurizer(topics),
         FakeCutter(),
-        FakeExporter(zip_path),
+        FakeExporter(),
     )
     await service.run(
         task=task,
@@ -292,14 +321,12 @@ async def test_usage_persisted_incrementally_transcribe_before_structurize(tmp_p
     await repo.create(task)
     sec = Section(title="s", start="0:00", end="5:00", content="c", slide_indices=[])
     topics = [Topic(title="T", start="0:00", end="5:00", sections=[sec], slide_indices=[])]
-    zip_path = tmp_path / "r.zip"
-    zip_path.write_bytes(b"z")
     service = _service(
         repo,
         FakeTranscriber(tmp_path / "t.srt"),
         FakeStructurizer(topics),
         FakeCutter(),
-        FakeExporter(zip_path),
+        FakeExporter(),
     )
     await service.run(
         task=task,
@@ -334,7 +361,7 @@ async def test_partial_usage_persisted_on_failure(tmp_path):
         FakeTranscriber(tmp_path / "t.srt"),
         StructurizerFailsAfterTranscribe(),
         FakeCutter(),
-        FakeExporter(tmp_path / "z.zip"),
+        FakeExporter(),
     )
     with pytest.raises(RuntimeError):
         await service.run(
@@ -358,14 +385,12 @@ async def test_mode_axes_audio_document(tmp_path):
     await repo.create(task)
     sec = Section(title="s", start="0:00", end="5:00", content="c", slide_indices=[])
     topics = [Topic(title="T", start="0:00", end="5:00", sections=[sec], slide_indices=[])]
-    zip_path = tmp_path / "r.zip"
-    zip_path.write_bytes(b"z")
     service = _service(
         repo,
         FakeTranscriber(tmp_path / "t.srt"),
         FakeStructurizer(topics),
         FakeCutter(),
-        FakeExporter(zip_path),
+        FakeExporter(),
     )
     await service.run(
         task=task,

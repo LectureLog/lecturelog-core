@@ -28,6 +28,10 @@ class DeleteTaskUseCase:
         # results/<task_id>/ всегда выводится из task_id (см. pipeline_service).
         await self._storage.delete_prefix(f"results/{task_id}/")
 
+        # results-tmp/<task_id>/ — временные zip от /result-url; чистим немедленно
+        # (lifecycle MinIO на префикс results-tmp/ — страховка от orphan вне DELETE).
+        await self._storage.delete_prefix(f"results-tmp/{task_id}/")
+
         # uploads-исходник чистим только если ключ сохранён; удаляем всю
         # папку загрузки uploads/<uuid>/, а не единственный объект.
         if task is not None and task.source_key:

@@ -9,8 +9,8 @@ class GetResultUseCase:
         self._repo = repository
 
     async def execute(self, task_id: str) -> str:
-        # Возвращает S3-ключ результата (results/<task_id>/result.zip). Скачивание/
-        # presigned делает слой API через порт Storage.
+        # Возвращает ПРЕФИКС папки результата (results/<task_id>/). Листинг объектов,
+        # сборку zip на лету и presigned делает слой API через порт Storage.
         task = await self._repo.get(task_id)
         if task is None:
             raise TaskNotFound(task_id)
