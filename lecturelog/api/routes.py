@@ -207,7 +207,11 @@ async def create_upload_url(
     return UploadUrlResponse(key=key, url=url, expires_in=expires_in)
 
 
-@router.get("/tasks/{task_id}", response_model=TaskStatusResponse)
+@router.get(
+    "/tasks/{task_id}",
+    response_model=TaskStatusResponse,
+    response_model_exclude_none=True,
+)
 async def get_task_status(task_id: str, repository=Depends(get_repository)):
     use_case = GetStatusUseCase(repository=repository)
     task = await use_case.execute(task_id)
