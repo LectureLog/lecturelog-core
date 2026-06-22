@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Annotated
 from uuid import uuid4
 
@@ -98,6 +98,16 @@ async def create_task(
         return JSONResponse(
             status_code=400,
             content={"detail": "media должен быть audio или video"},
+        )
+    # Инвариант «исходник-внутрь только через uploads/»: клиент не должен иметь
+    # возможности протащить чужой/произвольный ключ бакета (IDOR) или выйти за
+    # пределы uploads/ через traversal-сегменты (..).
+    if s3_key is not None and (
+        ".." in PurePosixPath(s3_key).parts or not s3_key.startswith("uploads/")
+    ):
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "s3_key должен быть в uploads/"},
         )
 
     media_upload = audio if audio is not None else video

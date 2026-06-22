@@ -130,6 +130,28 @@ def test_s3_key_invalid_media_is_400(client):
     assert r.status_code == 400
 
 
+def test_s3_key_outside_uploads_is_400(client):
+    # IDOR: чужой результат вне uploads/ нельзя протащить в источник.
+    r = client.post(
+        "/api/v1/tasks",
+        data={"s3_key": "results/other/result.zip", "media": "audio"},
+    )
+    assert r.status_code == 400
+    assert "uploads/" in r.json()["detail"]
+    assert client._worker.jobs == []
+
+
+def test_s3_key_with_traversal_is_400(client):
+    # Path traversal: сегмент .. позволяет выйти за пределы uploads/.
+    r = client.post(
+        "/api/v1/tasks",
+        data={"s3_key": "uploads/../results/x", "media": "audio"},
+    )
+    assert r.status_code == 400
+    assert "uploads/" in r.json()["detail"]
+    assert client._worker.jobs == []
+
+
 def test_uploads_returns_presigned_put(client_public):
     r = client_public.post("/api/v1/uploads", json={"filename": "lecture.mp3"})
     assert r.status_code == 200
