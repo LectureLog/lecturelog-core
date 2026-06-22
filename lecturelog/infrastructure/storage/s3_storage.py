@@ -80,7 +80,9 @@ class S3Storage(Storage):
             await client.download_file(Bucket=self._bucket, Key=key, Filename=str(local_path))
 
     async def presigned_put(self, key: str, expires_in: int | None = None) -> str | None:
-        if self._public_endpoint is None:
+        # Falsy-проверка: пустая строка (S3_PUBLIC_ENDPOINT=) тоже означает «не задан»,
+        # иначе _swap_host подставит пустые scheme/netloc → сломанный URL.
+        if not self._public_endpoint:
             return None
         params = {"Bucket": self._bucket, "Key": key}
         async with self._client_factory() as client:
@@ -98,7 +100,8 @@ class S3Storage(Storage):
         download_filename: str | None = None,
         content_type: str | None = None,
     ) -> str | None:
-        if self._public_endpoint is None:
+        # Falsy-проверка: пустая строка (S3_PUBLIC_ENDPOINT=) тоже означает «не задан».
+        if not self._public_endpoint:
             return None
         params: dict[str, str] = {"Bucket": self._bucket, "Key": key}
         # Override-заголовки ответа: заставляем браузер скачать как attachment с

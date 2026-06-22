@@ -81,6 +81,17 @@ def test_presigned_put_without_public_endpoint_returns_none():
     assert asyncio.run(s.presigned_put("uploads/abc/lecture.mp3")) is None
 
 
+def test_presigned_get_with_empty_public_endpoint_returns_none():
+    # Пустая строка (S3_PUBLIC_ENDPOINT=) — это «не задан», а не валидный хост.
+    s = _storage(public_endpoint="", client=StubClient())
+    assert asyncio.run(s.presigned_get("results/x.zip")) is None
+
+
+def test_presigned_put_with_empty_public_endpoint_returns_none():
+    s = _storage(public_endpoint="", client=StubClient())
+    assert asyncio.run(s.presigned_put("uploads/abc/lecture.mp3")) is None
+
+
 def test_upload_download_roundtrip(tmp_path):
     # upload_file/download_file проходят через client_factory; стаб хранит байты в dict.
     store: dict[str, bytes] = {}
