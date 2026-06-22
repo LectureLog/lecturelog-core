@@ -103,6 +103,22 @@ def test_create_with_s3_key_creates_s3_object_source(client):
     assert job.source.media == "audio"
 
 
+def test_create_with_s3_key_persists_source_key(client, repo):
+    r = client.post(
+        "/api/v1/tasks",
+        data={"s3_key": "uploads/abc/lecture.mp3", "media": "audio"},
+    )
+    assert r.status_code == 200
+    task_id = r.json()["task_id"]
+    assert repo.tasks[task_id].source_key == "uploads/abc/lecture.mp3"
+
+
+def test_create_audio_has_no_source_key(client, repo):
+    r = client.post("/api/v1/tasks", files={"audio": ("a.mp3", b"d", "audio/mpeg")})
+    task_id = r.json()["task_id"]
+    assert repo.tasks[task_id].source_key is None
+
+
 def test_create_with_s3_key_video(client):
     r = client.post(
         "/api/v1/tasks",

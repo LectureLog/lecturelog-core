@@ -199,7 +199,14 @@ async def create_task(
         kind_source = AudioSource(path=Path("placeholder.bin"))
 
     use_case = CreateTaskUseCase(repository=repository, enqueue=enqueue)
-    task_id = await use_case.execute(source=kind_source, slides_path=None)
+    # source_key сохраняем только для s3-источника (uploads/...), чтобы DELETE
+    # позже мог удалить исходник; для остальных источников исходного объекта в
+    # MinIO нет.
+    task_id = await use_case.execute(
+        source=kind_source,
+        slides_path=None,
+        source_key=s3_key if s3_key is not None else None,
+    )
     return CreateTaskResponse(task_id=task_id)
 
 
