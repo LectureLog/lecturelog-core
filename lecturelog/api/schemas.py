@@ -91,3 +91,20 @@ class TaskStatusResponse(BaseModel):
             # Пустой usage ({}) валидируется в Usage() со всеми None-полями.
             usage=Usage.model_validate(task.usage or {}),
         )
+
+    @staticmethod
+    def wire_body(task: Task) -> dict:
+        # Тело ответа GET /tasks/{id} в ИСХОДНОМ wire-формате: usage отдаётся сырым
+        # passthrough'ом из task.usage (как делал старый роут, возвращавший
+        # task.usage напрямую), без прогона через модель Usage. Это гарантирует
+        # байт-в-байт паритет: ключ transcribe.model:null сохраняется, пустой usage
+        # остаётся {}, отсутствующие стадии отсутствуют. Типизированная Usage служит
+        # только для OpenAPI-схемы (response_model в декораторе роута).
+        return {
+            "task_id": task.task_id,
+            "stage": task.stage.value if task.stage else None,
+            "progress_pct": task.progress_pct,
+            "error": task.error,
+            "result_path": task.result_path,
+            "usage": task.usage or {},
+        }

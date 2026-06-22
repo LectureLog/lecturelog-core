@@ -232,7 +232,6 @@ async def create_upload_url(
 @router.get(
     "/tasks/{task_id}",
     response_model=TaskStatusResponse,
-    response_model_exclude_none=True,
     summary="Статус задачи и накопленный usage",
     tags=["tasks"],
     responses={404: {"model": ErrorResponse, "description": "Task not found"}},
@@ -240,7 +239,15 @@ async def create_upload_url(
 async def get_task_status(task_id: str, repository=Depends(get_repository)):
     use_case = GetStatusUseCase(repository=repository)
     task = await use_case.execute(task_id)
-    return TaskStatusResponse.from_task(task)
+    # response_model=TaskStatusResponse оставлен ТОЛЬКО для OpenAPI-схемы
+    # (типизированная Usage документирует контракт). Фактически отдаём usage
+    # сырым passthrough'ом из task.usage — байт-в-байт как писал аккумулятор и
+    # как отдавал старый роут. Это сохраняет wire-формат: ключ transcribe.model:null
+    # не теряется (response_model_exclude_none рекурсивно резал его), пустой usage
+    # остаётся пустым объектом, отсутствующие стадии не материализуются как null.
+    # Побочно: путь чтения статуса не валидирует usage через Usage и не падает 500
+    # при неожиданной форме usage (NON-BLOCKING 4).
+    return JSONResponse(content=TaskStatusResponse.wire_body(task))
 
 
 @router.get(
