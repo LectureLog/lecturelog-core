@@ -133,14 +133,14 @@ def test_webhook_notifier_is_abstract():
 
 @pytest.mark.asyncio
 async def test_webhook_notifier_subclass_instantiates_and_notifies():
-    # Сабкласс с реализованным notify инстанцируется; сигнатура с default error=None.
+    # Сабкласс с реализованным notify инстанцируется; сигнатура с default error/error_code=None.
     calls = []
 
     class Impl(WebhookNotifier):
-        async def notify(self, task_id, status, error=None):
-            calls.append((task_id, status, error))
+        async def notify(self, task_id, status, error=None, error_code=None):
+            calls.append((task_id, status, error, error_code))
 
     impl = Impl()
     assert isinstance(impl, WebhookNotifier)
     await impl.notify("t1", TaskStatus.DONE)
-    assert calls == [("t1", TaskStatus.DONE, None)]
+    assert calls == [("t1", TaskStatus.DONE, None, None)]
