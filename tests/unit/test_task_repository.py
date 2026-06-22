@@ -55,6 +55,20 @@ async def test_source_key_round_trips(repo):
 
 
 @pytest.mark.asyncio
+async def test_delete_removes_task(repo):
+    await repo.create(Task(task_id="d1", source_kind="audio"))
+    await repo.delete("d1")
+    assert await repo.get("d1") is None
+
+
+@pytest.mark.asyncio
+async def test_delete_missing_is_idempotent(repo):
+    # Удаление несуществующей задачи не должно падать (платформа ретраит).
+    await repo.delete("ghost")
+    await repo.delete("ghost")
+
+
+@pytest.mark.asyncio
 async def test_mark_stale_as_interrupted_only_affects_processing(repo):
     t_proc = Task(task_id="p", source_kind="audio", status=TaskStatus.PROCESSING)
     t_done = Task(task_id="d", source_kind="audio", status=TaskStatus.DONE)
