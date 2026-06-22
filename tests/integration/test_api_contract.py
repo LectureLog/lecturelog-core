@@ -312,73 +312,101 @@ def test_result_not_ready_404(client, repo):
     assert r.json()["detail"] == "Result is not ready"
 
 
-def test_result_streams_zip_from_s3(client, repo):
-    # result_path — S3-ключ; эндпоинт скачивает объект из storage и стримит ZIP.
-    client._storage.objects["results/t/result.zip"] = b"PK\x03\x04zip"
-    repo.tasks["t"] = Task(
-        task_id="t",
+def _put_result_objects(storage, task_id="t"):
+    # Раскладываем папку результата объектами (как pipeline после export).
+    storage.objects[f"results/{task_id}/output/конспект.md"] = b"# md"
+    storage.objects[f"results/{task_id}/output/audio/01-a.mp3"] = b"audio"
+    storage.objects[f"results/{task_id}/output/structure.json"] = b"{}"
+
+
+def _done_task(task_id="t"):
+    return Task(
+        task_id=task_id,
         source_kind="audio",
         status=TaskStatus.DONE,
-        result_path="results/t/result.zip",
+        result_path=f"results/{task_id}/",
     )
+
+
+def test_result_assembles_zip_from_objects(client, repo):
+    # result_path — префикс папки; эндпоинт листит объекты, скачивает и собирает zip на лету.
+    import io
+    import zipfile
+
+    _put_result_objects(client._storage)
+    repo.tasks["t"] = _done_task()
     r = client.get("/api/v1/tasks/t/result")
     assert r.status_code == 200
     assert r.headers["content-type"] == "application/zip"
-    assert r.content == b"PK\x03\x04zip"
+    with zipfile.ZipFile(io.BytesIO(r.content)) as zf:
+        names = set(zf.namelist())
+    assert "output/конспект.md" in names
+    assert "output/audio/01-a.mp3" in names
+    assert "output/structure.json" in names
 
 
-def test_result_cleans_up_tmp_file(client, repo, tmp_path):
-    # Disk leak: скачанный во work_dir ZIP должен удаляться после отдачи,
-    # а не накапливаться на каждый запрос/ретрай.
-    client._storage.objects["results/t/result.zip"] = b"PK\x03\x04zip"
-    repo.tasks["t"] = Task(
-        task_id="t",
-        source_kind="audio",
-        status=TaskStatus.DONE,
-        result_path="results/t/result.zip",
-    )
+def test_result_cleans_up_tmp_dir(client, repo, tmp_path):
+    # Disk leak: временные каталоги сборки zip должны подчищаться после отдачи.
+    _put_result_objects(client._storage)
+    repo.tasks["t"] = _done_task()
     results_tmp = tmp_path / "results_tmp"
     for _ in range(3):
         r = client.get("/api/v1/tasks/t/result")
         assert r.status_code == 200
-        assert r.content == b"PK\x03\x04zip"
-    # После всех запросов tmp-каталог не должен накапливать файлы.
-    leftover = list(results_tmp.rglob("*.zip")) if results_tmp.exists() else []
-    assert leftover == []
+    leftover = list(results_tmp.rglob("*")) if results_tmp.exists() else []
+    assert [p for p in leftover if p.is_file()] == []
 
 
-def test_result_url_with_public_returns_presigned(client_public, repo):
-    client_public._storage.objects["results/t/result.zip"] = b"zip"
-    repo.tasks["t"] = Task(
-        task_id="t",
-        source_kind="audio",
-        status=TaskStatus.DONE,
-        result_path="results/t/result.zip",
-    )
+def test_result_not_ready_no_objects_404(client, repo):
+    # result_path есть, но объектов под префиксом нет -> 404.
+    repo.tasks["t"] = _done_task()
+    r = client.get("/api/v1/tasks/t/result")
+    assert r.status_code == 404
+    assert r.json()["detail"] == "Result is not ready"
+
+
+def test_result_url_assembles_and_presigns_tmp_object(client_public, repo):
+    _put_result_objects(client_public._storage)
+    repo.tasks["t"] = _done_task()
     r = client_public.get("/api/v1/tasks/t/result-url?filename=Лекция")
     assert r.status_code == 200
     body = r.json()
     assert body["url"].startswith("https://fake/")
-    assert "results/t/result.zip" in body["url"]
+    assert body["expires_in"] == 3600
+    tmp_keys = [
+        k
+        for k in client_public._storage.objects
+        if k.startswith("results-tmp/t/") and k.endswith(".zip")
+    ]
+    assert len(tmp_keys) == 1
+    assert tmp_keys[0] in body["url"]
     assert "Лекция.zip" in body["url"]
-    assert "expires_in" in body
 
 
-def test_result_url_without_public_409(client, repo):
-    repo.tasks["t"] = Task(
-        task_id="t",
-        source_kind="audio",
-        status=TaskStatus.DONE,
-        result_path="results/t/result.zip",
-    )
+def test_result_url_409_without_public(client, repo):
+    _put_result_objects(client._storage)
+    repo.tasks["t"] = _done_task()
     r = client.get("/api/v1/tasks/t/result-url?filename=Лекция")
     assert r.status_code == 409
 
 
-def test_result_url_not_ready_404(client_public, repo):
+def test_result_url_404_no_result(client_public, repo):
     repo.tasks["t"] = Task(task_id="t", source_kind="audio")
     r = client_public.get("/api/v1/tasks/t/result-url?filename=X")
     assert r.status_code == 404
+
+
+def test_result_url_unique_tmp_key_per_request(client_public, repo):
+    _put_result_objects(client_public._storage)
+    repo.tasks["t"] = _done_task()
+    client_public.get("/api/v1/tasks/t/result-url?filename=X")
+    client_public.get("/api/v1/tasks/t/result-url?filename=X")
+    tmp_keys = [
+        k
+        for k in client_public._storage.objects
+        if k.startswith("results-tmp/t/") and k.endswith(".zip")
+    ]
+    assert len(tmp_keys) == 2
 
 
 def test_delete_existing_returns_204_and_cleans_all(client, repo):
@@ -387,10 +415,11 @@ def test_delete_existing_returns_204_and_cleans_all(client, repo):
         source_kind="s3_object",
         source_key="uploads/u/lec.mp3",
         status=TaskStatus.DONE,
-        result_path="results/t/result.zip",
+        result_path="results/t/",
     )
-    client._storage.objects["results/t/result.zip"] = b"zip"
-    client._storage.objects["results/t/media/0.mp3"] = b"m"
+    client._storage.objects["results/t/output/конспект.md"] = b"md"
+    client._storage.objects["results/t/output/audio/0.mp3"] = b"m"
+    client._storage.objects["results-tmp/t/abc.zip"] = b"tmp"
     client._storage.objects["uploads/u/lec.mp3"] = b"src"
 
     r = client.delete("/api/v1/tasks/t")
@@ -402,7 +431,7 @@ def test_delete_existing_returns_204_and_cleans_all(client, repo):
 
 def test_delete_is_idempotent_returns_204_on_repeat(client, repo):
     repo.tasks["t"] = Task(task_id="t", source_kind="audio")
-    client._storage.objects["results/t/result.zip"] = b"zip"
+    client._storage.objects["results/t/output/конспект.md"] = b"md"
     assert client.delete("/api/v1/tasks/t").status_code == 204
     # Повтор на уже удалённую задачу: 204, НЕ 404/500.
     assert client.delete("/api/v1/tasks/t").status_code == 204
@@ -416,8 +445,8 @@ def test_delete_unknown_task_returns_204(client):
 
 def test_delete_audio_task_keeps_foreign_uploads(client, repo):
     repo.tasks["t"] = Task(task_id="t", source_kind="audio")  # без source_key
-    client._storage.objects["results/t/result.zip"] = b"zip"
+    client._storage.objects["results/t/output/конспект.md"] = b"md"
     client._storage.objects["uploads/other/keep.mp3"] = b"keep"
     assert client.delete("/api/v1/tasks/t").status_code == 204
-    assert "results/t/result.zip" not in client._storage.objects
+    assert "results/t/output/конспект.md" not in client._storage.objects
     assert "uploads/other/keep.mp3" in client._storage.objects

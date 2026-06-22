@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 from pathlib import Path, PurePosixPath
 from typing import Annotated
 from uuid import uuid4
@@ -7,6 +8,9 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
 from starlette.background import BackgroundTask
+
+from lecturelog.domain.exceptions import ResultNotReady
+from lecturelog.infrastructure.export.zip_utils import zip_dir
 
 from lecturelog.api.dependencies import (
     get_gemini,
@@ -71,6 +75,25 @@ def _safe_filename(filename: str) -> str:
     # чтобы клиент не задал ключ вне своего uploads/<uuid>/ префикса.
     name = Path(filename).name.replace("\\", "_")
     return name or "upload.bin"
+
+
+async def _assemble_result_zip(storage, prefix: str, dest_dir: Path) -> Path:
+    """Собрать zip результата НА ЛЕТУ из объектов под префиксом results/<id>/.
+
+    Листит ключи, скачивает их в dest_dir/output (arcname без префикса -> output/...),
+    зипует. Пустой листинг -> ResultNotReady (объекты ещё не залиты). dest_dir уникален
+    на запрос (вызывающий чистит его целиком). Возвращает путь к собранному zip.
+    """
+    keys = await storage.list_keys(prefix)
+    if not keys:
+        raise ResultNotReady(prefix)
+    src_root = dest_dir / "src"
+    for key in keys:
+        rel = key[len(prefix) :]  # results/<id>/output/... -> output/...
+        await storage.download_file(key, src_root / rel)
+    zip_path = dest_dir / "result.zip"
+    zip_dir(src_root / "output", zip_path, base=src_root)
+    return zip_path
 
 
 @router.post(
@@ -363,7 +386,7 @@ async def get_task_transcript(
 
 @router.get(
     "/tasks/{task_id}/result",
-    summary="Стрим готового ZIP-результата из хранилища",
+    summary="Собрать и отдать ZIP-результат на лету",
     tags=["tasks"],
     responses={
         200: {"content": {"application/zip": {}}, "description": "ZIP с результатом"},
@@ -376,20 +399,20 @@ async def get_task_result(
     storage=Depends(get_storage),
     work_dir: Path = Depends(get_work_dir),
 ):
-    # Стрим ZIP из S3: скачиваем объект во временный локальный файл и отдаём.
+    # Папочный результат: листим объекты под results/<id>/, скачиваем во временный
+    # uuid-подкаталог и собираем zip на лету (zip не хранится в MinIO — нет дублирования).
     # MinIO клиенту не виден — работает даже без public endpoint (дефолт автономии).
     use_case = GetResultUseCase(repository=repository)
-    key = await use_case.execute(task_id)
-    # Уникальное имя на запрос: параллельные обращения к одному task_id не затирают
-    # и не удаляют tmp-файл друг друга.
-    tmp = work_dir / "results_tmp" / task_id / f"{uuid4().hex}.zip"
-    await storage.download_file(key, tmp)
-    # Удаляем tmp после отдачи (иначе disk leak: полная копия ZIP на каждый запрос).
+    prefix = await use_case.execute(task_id)
+    # Уникальный каталог на запрос: параллельные обращения к одному task_id не мешают друг другу.
+    tmp_dir = work_dir / "results_tmp" / task_id / uuid4().hex
+    zip_path = await _assemble_result_zip(storage, prefix, tmp_dir)
+    # Удаляем весь tmp-каталог после отдачи (иначе disk leak на каждый запрос).
     return FileResponse(
-        path=tmp,
+        path=zip_path,
         filename="result.zip",
         media_type="application/zip",
-        background=BackgroundTask(lambda: tmp.unlink(missing_ok=True)),
+        background=BackgroundTask(lambda: shutil.rmtree(tmp_dir, ignore_errors=True)),
     )
 
 
@@ -411,19 +434,33 @@ async def get_task_result_url(
     filename: str = "result",
     repository=Depends(get_repository),
     storage=Depends(get_storage),
-    expires_in: int = Depends(get_presign_expiry),
+    work_dir: Path = Depends(get_work_dir),
 ):
-    # Presigned GET с override-заголовками (attachment; filename="X.zip" + zip).
-    # Доступен только при заданном public endpoint, иначе 409.
+    # Папочный результат: собираем zip на лету тем же helper'ом, что /result, заливаем
+    # ВРЕМЕННЫМ объектом results-tmp/<id>/<uuid>.zip и выдаём presigned GET (1 час) с
+    # override-заголовками (attachment; filename="X.zip" + zip). tmp-объект чистится
+    # lifecycle MinIO (префикс results-tmp/) и DELETE. Без public endpoint -> 409.
     use_case = GetResultUseCase(repository=repository)
-    key = await use_case.execute(task_id)
+    prefix = await use_case.execute(task_id)
+    tmp_dir = work_dir / "results_tmp" / task_id / uuid4().hex
+    try:
+        zip_path = await _assemble_result_zip(storage, prefix, tmp_dir)
+        tmp_key = f"results-tmp/{task_id}/{uuid4().hex}.zip"
+        await storage.upload_file(zip_path, tmp_key)
+    finally:
+        # Локальный zip нужен только для заливки — чистим весь tmp-каталог движка.
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    # expires_in фиксирован 1 час (tmp-объект живёт коротко: lifecycle 1 день).
+    expires_in = 3600
     url = await storage.presigned_get(
-        key,
+        tmp_key,
         expires_in=expires_in,
         download_filename=filename,
         content_type="application/zip",
     )
     if url is None:
+        # tmp-zip уже залит — допустимый orphan (подберёт lifecycle/DELETE).
         return JSONResponse(
             status_code=409,
             content={"detail": "presigned download недоступен: S3_PUBLIC_ENDPOINT не задан"},
