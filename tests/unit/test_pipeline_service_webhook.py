@@ -2,7 +2,7 @@ import pytest
 
 from lecturelog.application.pipeline_service import PipelineService
 from lecturelog.application.progress_plan import ProgressPlan
-from lecturelog.domain.enums import TaskStatus
+from lecturelog.domain.enums import ErrorCode, TaskStatus
 from lecturelog.domain.media_source import AudioSource
 from lecturelog.domain.models import Section, Task, Topic
 from tests.unit.test_pipeline_service import (
@@ -16,26 +16,26 @@ from tests.unit.test_pipeline_service import (
 
 
 class RecordingNotifier:
-    """Записывает все вызовы notify как (task_id, status, error)."""
+    """Записывает все вызовы notify как (task_id, status, error, error_code)."""
 
     def __init__(self):
         self.calls = []
 
-    async def notify(self, task_id, status, error=None):
-        self.calls.append((task_id, status, error))
+    async def notify(self, task_id, status, error=None, error_code=None):
+        self.calls.append((task_id, status, error, error_code))
 
 
 class BoomNotifier:
     """Бросает при любой попытке отправки — проверяем, что пайплайн не падает."""
 
-    async def notify(self, task_id, status, error=None):
+    async def notify(self, task_id, status, error=None, error_code=None):
         raise RuntimeError("notifier boom")
 
 
 class TimeoutNotifier:
     """Имитирует таймаут нотификатора — пайплайн не должен ронять/задерживать."""
 
-    async def notify(self, task_id, status, error=None):
+    async def notify(self, task_id, status, error=None, error_code=None):
         raise TimeoutError("notifier timeout")
 
 
@@ -84,10 +84,12 @@ async def test_webhook_fires_once_on_done(tmp_path):
     await _run_ok(repo, tmp_path, task, notifier)
 
     assert len(notifier.calls) == 1
-    tid, status, error = notifier.calls[0]
+    tid, status, error, error_code = notifier.calls[0]
     assert tid == "w1"
     assert status == TaskStatus.DONE
     assert error is None
+    # На успешном завершении машинного кода ошибки нет.
+    assert error_code is None
 
 
 @pytest.mark.asyncio
@@ -112,10 +114,12 @@ async def test_webhook_fires_on_failed_with_error(tmp_path):
             work_dir=tmp_path,
         )
     assert len(notifier.calls) == 1
-    tid, status, error = notifier.calls[0]
+    tid, status, error, error_code = notifier.calls[0]
     assert tid == "w2"
     assert status == TaskStatus.FAILED
     assert error is not None and "groq down" in error
+    # RuntimeError("groq down") без распознаваемых сигналов -> internal.
+    assert error_code == "internal"
 
 
 @pytest.mark.asyncio
@@ -234,3 +238,35 @@ async def test_usage_still_persisted_with_notifier(tmp_path):
     final = await repo.get("w7")
     # Узел usage не сломан: расход по-прежнему персистится.
     assert final.usage["total"]["audio_seconds"] == 120
+
+
+class FailingRateLimitTranscriber:
+    async def transcribe(self, audio_path, output_dir, on_progress=None, on_usage=None):
+        raise RuntimeError("Gemini не дал ответ за 5 попыток: 429 RESOURCE_EXHAUSTED")
+
+
+@pytest.mark.asyncio
+async def test_webhook_failed_carries_error_code(tmp_path):
+    repo = InMemoryRepo()
+    task = Task(task_id="wc", source_kind="audio")
+    await repo.create(task)
+    notifier = RecordingNotifier()
+    service = _service(
+        repo,
+        FailingRateLimitTranscriber(),
+        FakeStructurizer([]),
+        FakeCutter(),
+        FakeExporter(tmp_path / "z.zip"),
+        notifier,
+    )
+    with pytest.raises(RuntimeError):
+        await service.run(
+            task=task,
+            source=AudioSource(path=tmp_path / "a.mp3"),
+            slide_provider=None,
+            work_dir=tmp_path,
+        )
+    tid, status, error, error_code = notifier.calls[0]
+    assert status == TaskStatus.FAILED
+    assert error_code == "rate_limit"
+    assert (await repo.get("wc")).error_code == ErrorCode.RATE_LIMIT

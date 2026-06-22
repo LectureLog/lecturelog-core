@@ -4,7 +4,7 @@ import pytest
 
 from lecturelog.application.pipeline_service import PipelineService
 from lecturelog.application.progress_plan import ProgressPlan
-from lecturelog.domain.enums import TaskStatus
+from lecturelog.domain.enums import ErrorCode, TaskStatus
 from lecturelog.domain.media_source import AudioSource, S3ObjectSource
 from lecturelog.domain.models import Section, Task, Topic
 from tests.support.fake_storage import FakeStorage
@@ -219,6 +219,8 @@ async def test_critical_failure_marks_task_failed(tmp_path):
     final = await repo.get("t2")
     assert final.status == TaskStatus.FAILED
     assert final.error is not None and "groq down" in final.error
+    # RuntimeError("groq down") без распознаваемых сигналов -> internal.
+    assert final.error_code is ErrorCode.INTERNAL
 
 
 @pytest.mark.asyncio
