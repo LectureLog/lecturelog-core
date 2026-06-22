@@ -1,26 +1,41 @@
 from __future__ import annotations
 
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Annotated
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
+from starlette.background import BackgroundTask
 
 from lecturelog.api.dependencies import (
     get_gemini,
+    get_presign_expiry,
     get_repository,
-    get_upload_dir,
+    get_storage,
     get_video_slides_config,
+    get_work_dir,
     get_worker,
 )
-from lecturelog.api.schemas import CreateTaskResponse, TaskStatusResponse
+from lecturelog.api.schemas import (
+    CreateTaskResponse,
+    ResultUrlResponse,
+    TaskStatusResponse,
+    UploadUrlRequest,
+    UploadUrlResponse,
+)
 from lecturelog.application.use_cases.create_task import CreateTaskUseCase
 from lecturelog.application.use_cases.get_result import GetResultUseCase
 from lecturelog.application.use_cases.get_status import GetStatusUseCase
 from lecturelog.application.use_cases.get_transcript import GetTranscriptUseCase
 from lecturelog.application.worker import PipelineJob
 from lecturelog.domain.exceptions import TranscribeFailed
-from lecturelog.domain.media_source import AudioSource, VideoFileSource, VideoUrlSource
+from lecturelog.domain.media_source import (
+    AudioSource,
+    S3ObjectSource,
+    VideoFileSource,
+    VideoUrlSource,
+)
 from lecturelog.infrastructure.media.url_utils import is_url
 from lecturelog.infrastructure.slides.document_provider import DocumentSlideProvider
 from lecturelog.infrastructure.slides.video_provider import VideoSlideProvider
@@ -42,8 +57,15 @@ async def _save_upload(upload: UploadFile, target: Path) -> None:
             f.write(chunk)
 
 
-def _transcript_srt_path(upload_dir: Path, task_id: str) -> Path:
-    return upload_dir / task_id / "transcribe" / "transcript.srt"
+def _transcript_srt_path(work_dir: Path, task_id: str) -> Path:
+    return work_dir / task_id / "transcribe" / "transcript.srt"
+
+
+def _safe_filename(filename: str) -> str:
+    # Берём только basename и режем потенциально опасные сепараторы,
+    # чтобы клиент не задал ключ вне своего uploads/<uuid>/ префикса.
+    name = Path(filename).name.replace("\\", "_")
+    return name or "upload.bin"
 
 
 @router.post("/tasks", response_model=CreateTaskResponse)
@@ -52,35 +74,55 @@ async def create_task(
     audio: Annotated[UploadFile | None, File()] = None,
     video: Annotated[UploadFile | None, File()] = None,
     video_url: Annotated[str | None, Form()] = None,
+    s3_key: Annotated[str | None, Form()] = None,
+    media: Annotated[str | None, Form()] = None,
     slides: Annotated[UploadFile | None, File()] = None,
     no_slides: Annotated[bool, Form()] = False,
     repository=Depends(get_repository),
     worker=Depends(get_worker),
-    upload_dir: Path = Depends(get_upload_dir),
+    work_dir: Path = Depends(get_work_dir),
     gemini=Depends(get_gemini),
     video_slides_config: dict = Depends(get_video_slides_config),
 ):
-    sources_count = sum(x is not None for x in (audio, video, video_url))
+    sources_count = sum(x is not None for x in (audio, video, video_url, s3_key))
     if sources_count != 1:
         return JSONResponse(
             status_code=400,
-            content={"detail": "Specify exactly one of: audio, video, video_url"},
+            content={"detail": "Specify exactly one of: audio, video, video_url, s3_key"},
         )
     if video_url is not None and not is_url(video_url):
         return JSONResponse(
             status_code=400,
             content={"detail": "video_url должен быть http/https URL"},
         )
+    if s3_key is not None and (media or "audio") not in ("audio", "video"):
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "media должен быть audio или video"},
+        )
+    # Инвариант «исходник-внутрь только через uploads/»: клиент не должен иметь
+    # возможности протащить чужой/произвольный ключ бакета (IDOR) или выйти за
+    # пределы uploads/ через traversal-сегменты (..).
+    if s3_key is not None and (
+        ".." in PurePosixPath(s3_key).parts or not s3_key.startswith("uploads/")
+    ):
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "s3_key должен быть в uploads/"},
+        )
 
     media_upload = audio if audio is not None else video
 
     async def enqueue(task_id: str) -> None:
-        task_dir = upload_dir / task_id
+        task_dir = work_dir / task_id
         task_dir.mkdir(parents=True, exist_ok=True)
 
         # Источник: сохраняем загруженный файл (audio/video) на диск; для video_url
-        # файла нет — его скачает ingestor внутри pipeline.
-        if video_url is not None:
+        # файла нет — его скачает ingestor внутри pipeline; для s3_key исходник уже
+        # в MinIO (uploads/) — его скачает pipeline по ключу.
+        if s3_key is not None:
+            source = S3ObjectSource(key=s3_key, media=media or "audio")
+        elif video_url is not None:
             source = VideoUrlSource(url=video_url)
         else:
             media_path = task_dir / (media_upload.filename or "media.bin")
@@ -98,9 +140,12 @@ async def create_task(
             await _save_upload(slides, slides_path)
             document_provider = DocumentSlideProvider(slides_path=slides_path)
 
-        # Видео-провайдер отложен: video_path появится только после ingest.
+        # Видео-провайдер отложен: video_path появится только после ingest/скачивания.
+        is_video_request = (
+            video is not None or video_url is not None or (s3_key is not None and media == "video")
+        )
         video_slide_provider_factory = None
-        if video is not None or video_url is not None:
+        if is_video_request:
 
             def video_slide_provider_factory(local_video: Path):
                 return VideoSlideProvider(
@@ -131,7 +176,9 @@ async def create_task(
 
     # Источник для use-case нужен только ради source.kind (Task.source_kind);
     # реальные пути собираются в enqueue, когда известен task_id.
-    if video_url is not None:
+    if s3_key is not None:
+        kind_source = S3ObjectSource(key=s3_key, media=media or "audio")
+    elif video_url is not None:
         kind_source = VideoUrlSource(url=video_url)
     elif video is not None:
         kind_source = VideoFileSource(path=Path("placeholder.bin"))
@@ -141,6 +188,23 @@ async def create_task(
     use_case = CreateTaskUseCase(repository=repository, enqueue=enqueue)
     task_id = await use_case.execute(source=kind_source, slides_path=None)
     return CreateTaskResponse(task_id=task_id)
+
+
+@router.post("/uploads", response_model=UploadUrlResponse)
+async def create_upload_url(
+    body: UploadUrlRequest,
+    storage=Depends(get_storage),
+    expires_in: int = Depends(get_presign_expiry),
+):
+    # Презентуем платформе presigned PUT в uploads/<uuid>/<safe-filename>.
+    key = f"uploads/{uuid4().hex}/{_safe_filename(body.filename)}"
+    url = await storage.presigned_put(key, expires_in=expires_in)
+    if url is None:
+        return JSONResponse(
+            status_code=409,
+            content={"detail": "presigned upload недоступен: S3_PUBLIC_ENDPOINT не задан"},
+        )
+    return UploadUrlResponse(key=key, url=url, expires_in=expires_in)
 
 
 @router.get("/tasks/{task_id}", response_model=TaskStatusResponse)
@@ -155,7 +219,7 @@ async def get_task_transcript(
     task_id: str,
     format: str = "srt",
     repository=Depends(get_repository),
-    upload_dir: Path = Depends(get_upload_dir),
+    work_dir: Path = Depends(get_work_dir),
 ):
     # Валидация формата заранее, до проверки статуса задачи.
     if format not in ("srt", "txt"):
@@ -166,7 +230,7 @@ async def get_task_transcript(
 
     use_case = GetTranscriptUseCase(
         repository=repository,
-        srt_path_for=lambda tid: _transcript_srt_path(upload_dir, tid),
+        srt_path_for=lambda tid: _transcript_srt_path(work_dir, tid),
     )
     task = await repository.get(task_id)
     if task is None:
@@ -207,12 +271,53 @@ async def get_task_transcript(
 
 
 @router.get("/tasks/{task_id}/result")
-async def get_task_result(task_id: str, repository=Depends(get_repository)):
+async def get_task_result(
+    task_id: str,
+    repository=Depends(get_repository),
+    storage=Depends(get_storage),
+    work_dir: Path = Depends(get_work_dir),
+):
+    # Стрим ZIP из S3: скачиваем объект во временный локальный файл и отдаём.
+    # MinIO клиенту не виден — работает даже без public endpoint (дефолт автономии).
     use_case = GetResultUseCase(repository=repository)
-    path = await use_case.execute(task_id)
-    if not path.exists():
-        return JSONResponse(status_code=404, content={"detail": "Result file not found"})
-    return FileResponse(path=path, filename=path.name, media_type="application/zip")
+    key = await use_case.execute(task_id)
+    # Уникальное имя на запрос: параллельные обращения к одному task_id не затирают
+    # и не удаляют tmp-файл друг друга.
+    tmp = work_dir / "results_tmp" / task_id / f"{uuid4().hex}.zip"
+    await storage.download_file(key, tmp)
+    # Удаляем tmp после отдачи (иначе disk leak: полная копия ZIP на каждый запрос).
+    return FileResponse(
+        path=tmp,
+        filename="result.zip",
+        media_type="application/zip",
+        background=BackgroundTask(lambda: tmp.unlink(missing_ok=True)),
+    )
+
+
+@router.get("/tasks/{task_id}/result-url", response_model=ResultUrlResponse)
+async def get_task_result_url(
+    task_id: str,
+    filename: str = "result",
+    repository=Depends(get_repository),
+    storage=Depends(get_storage),
+    expires_in: int = Depends(get_presign_expiry),
+):
+    # Presigned GET с override-заголовками (attachment; filename="X.zip" + zip).
+    # Доступен только при заданном public endpoint, иначе 409.
+    use_case = GetResultUseCase(repository=repository)
+    key = await use_case.execute(task_id)
+    url = await storage.presigned_get(
+        key,
+        expires_in=expires_in,
+        download_filename=filename,
+        content_type="application/zip",
+    )
+    if url is None:
+        return JSONResponse(
+            status_code=409,
+            content={"detail": "presigned download недоступен: S3_PUBLIC_ENDPOINT не задан"},
+        )
+    return ResultUrlResponse(url=url, expires_in=expires_in)
 
 
 @router.get("/health")

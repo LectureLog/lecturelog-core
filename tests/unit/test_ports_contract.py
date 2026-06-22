@@ -6,6 +6,7 @@ from lecturelog.domain.ports import (
     MediaCutter,
     MediaIngestor,
     SlideProvider,
+    Storage,
     Structurizer,
     TaskRepository,
     Transcriber,
@@ -63,6 +64,41 @@ def test_complete_implementation_instantiates():
             return Path("x.srt")
 
     assert isinstance(Good(), Transcriber)
+
+
+def test_storage_is_abstract():
+    # Порт хранилища нельзя инстанцировать напрямую.
+    with pytest.raises(TypeError):
+        Storage()
+
+
+def test_storage_incomplete_impl_cannot_instantiate():
+    # Реализация без всех 4 методов остаётся абстрактной.
+    class Bad(Storage):
+        async def upload_file(self, local_path, key):
+            pass
+
+    with pytest.raises(TypeError):
+        Bad()
+
+
+def test_storage_complete_impl_instantiates():
+    class Good(Storage):
+        async def upload_file(self, local_path, key):
+            pass
+
+        async def download_file(self, key, local_path):
+            pass
+
+        async def presigned_put(self, key, expires_in=None):
+            return None
+
+        async def presigned_get(
+            self, key, expires_in=None, download_filename=None, content_type=None
+        ):
+            return None
+
+    assert isinstance(Good(), Storage)
 
 
 def test_webhook_notifier_is_abstract():

@@ -9,6 +9,22 @@ class CreateTaskResponse(BaseModel):
     task_id: str
 
 
+class UploadUrlRequest(BaseModel):
+    # Имя исходного файла; используется как хвост ключа uploads/<uuid>/<filename>.
+    filename: str
+
+
+class UploadUrlResponse(BaseModel):
+    key: str
+    url: str
+    expires_in: int
+
+
+class ResultUrlResponse(BaseModel):
+    url: str
+    expires_in: int
+
+
 class TaskStatusResponse(BaseModel):
     task_id: str
     stage: str | None

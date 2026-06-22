@@ -5,8 +5,9 @@ import pytest
 from lecturelog.application.pipeline_service import PipelineService
 from lecturelog.application.progress_plan import ProgressPlan
 from lecturelog.domain.enums import TaskStatus
-from lecturelog.domain.media_source import AudioSource
+from lecturelog.domain.media_source import AudioSource, S3ObjectSource
 from lecturelog.domain.models import Section, Task, Topic
+from tests.support.fake_storage import FakeStorage
 
 
 class InMemoryRepo:
@@ -83,6 +84,87 @@ def _service(repo, transcriber, structurizer, cutter, exporter):
         exporter=exporter,
         progress_plan_factory=ProgressPlan.for_audio,
     )
+
+
+def _topics_single():
+    sec = Section(title="s", start="0:00", end="5:00", content="c", slide_indices=[])
+    return [Topic(title="T", start="0:00", end="5:00", sections=[sec], slide_indices=[])]
+
+
+@pytest.mark.asyncio
+async def test_zip_uploaded_to_s3_and_result_path_is_key(tmp_path):
+    # При наличии storage ZIP заливается в results/<task_id>/result.zip,
+    # а result_path = этот S3-ключ (не локальный путь).
+    repo = InMemoryRepo()
+    task = Task(task_id="s1", source_kind="audio")
+    await repo.create(task)
+    zip_path = tmp_path / "result.zip"
+    zip_path.write_bytes(b"PK-zip-bytes")
+    storage = FakeStorage()
+    service = PipelineService(
+        repository=repo,
+        transcriber=FakeTranscriber(tmp_path / "t.srt"),
+        structurizer=FakeStructurizer(_topics_single()),
+        audio_cutter=FakeCutter(),
+        exporter=FakeExporter(zip_path),
+        progress_plan_factory=ProgressPlan.for_audio,
+        storage=storage,
+    )
+    await service.run(
+        task=task,
+        source=AudioSource(path=tmp_path / "a.mp3"),
+        slide_provider=None,
+        work_dir=tmp_path,
+    )
+    final = await repo.get("s1")
+    assert final.status == TaskStatus.DONE
+    assert final.result_path == "results/s1/result.zip"
+    assert storage.objects["results/s1/result.zip"] == b"PK-zip-bytes"
+
+
+@pytest.mark.asyncio
+async def test_s3_object_source_downloaded_before_pipeline(tmp_path):
+    # S3ObjectSource(media=audio): исходник скачивается из storage перед транскрибацией,
+    # transcribe получает локальный путь к скачанному файлу.
+    repo = InMemoryRepo()
+    task = Task(task_id="s2", source_kind="s3_object")
+    await repo.create(task)
+    storage = FakeStorage()
+    storage.objects["uploads/abc/lecture.mp3"] = b"audio-bytes"
+    zip_path = tmp_path / "result.zip"
+    zip_path.write_bytes(b"z")
+
+    transcriber = FakeTranscriber(tmp_path / "t.srt")
+    received = {}
+    orig = transcriber.transcribe
+
+    async def spy(audio_path, output_dir, on_progress=None, on_usage=None):
+        received["audio_path"] = audio_path
+        return await orig(audio_path, output_dir, on_progress, on_usage)
+
+    transcriber.transcribe = spy
+
+    service = PipelineService(
+        repository=repo,
+        transcriber=transcriber,
+        structurizer=FakeStructurizer(_topics_single()),
+        audio_cutter=FakeCutter(),
+        exporter=FakeExporter(zip_path),
+        progress_plan_factory=ProgressPlan.for_audio,
+        storage=storage,
+    )
+    await service.run(
+        task=task,
+        source=S3ObjectSource(key="uploads/abc/lecture.mp3", media="audio"),
+        slide_provider=None,
+        work_dir=tmp_path,
+    )
+    final = await repo.get("s2")
+    assert final.status == TaskStatus.DONE
+    # transcribe получил локальный путь к скачанному файлу
+    local = received["audio_path"]
+    assert local.read_bytes() == b"audio-bytes"
+    assert "uploads/abc/lecture.mp3" not in str(local)
 
 
 @pytest.mark.asyncio

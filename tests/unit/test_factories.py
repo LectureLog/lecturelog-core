@@ -1,7 +1,13 @@
 from pathlib import Path
 
-from lecturelog.application.factories import cutter_factory, slide_provider_factory
+from lecturelog.application.factories import (
+    cutter_factory,
+    slide_provider_factory,
+    storage_factory,
+)
+from lecturelog.config.settings import S3Config
 from lecturelog.domain.media_source import AudioSource, VideoFileSource
+from lecturelog.infrastructure.storage.s3_storage import S3Storage
 
 
 class _A:  # маркеры, чтобы различать выбранную реализацию
@@ -45,3 +51,29 @@ def test_none_when_nothing_available():
     assert (
         slide_provider_factory(no_slides=False, document_provider=None, video_provider=None) is None
     )
+
+
+def _s3_config(monkeypatch, public=None):
+    monkeypatch.setenv("S3_INTERNAL_ENDPOINT", "http://minio:9000")
+    monkeypatch.setenv("S3_BUCKET", "lectures")
+    monkeypatch.setenv("S3_ACCESS_KEY", "ak")
+    monkeypatch.setenv("S3_SECRET_KEY", "sk")
+    if public is None:
+        monkeypatch.delenv("S3_PUBLIC_ENDPOINT", raising=False)
+    else:
+        monkeypatch.setenv("S3_PUBLIC_ENDPOINT", public)
+    return S3Config()
+
+
+def test_storage_factory_builds_s3storage(monkeypatch):
+    cfg = _s3_config(monkeypatch, public="https://files.example")
+    storage = storage_factory(cfg)
+    assert isinstance(storage, S3Storage)
+    assert storage._bucket == "lectures"
+    assert storage._public_endpoint == "https://files.example"
+
+
+def test_storage_factory_no_public_keeps_presign_off(monkeypatch):
+    cfg = _s3_config(monkeypatch, public=None)
+    storage = storage_factory(cfg)
+    assert storage._public_endpoint is None

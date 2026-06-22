@@ -13,21 +13,57 @@ services:
       timeout: 3s
       retries: 10
 
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes:
+      - miniodata:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    # Наружу MinIO в автономном режиме не выставляем: движок ходит по internal
+    # endpoint http://minio:9000 внутри docker-сети. Раскомментируй для отладки/консоли.
+    # ports:
+    #   - "9000:9000"
+    #   - "9001:9001"
+
+  # Создание бакета lectures при старте (idempotent). После создания контейнер
+  # завершается — это инит-шаг, а не постоянный сервис.
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 minioadmin minioadmin &&
+      mc mb --ignore-existing local/lectures
+      "
+
   api:
     build: .
     depends_on:
       db:
         condition: service_healthy
+      minio:
+        condition: service_healthy
     env_file: .env
     environment:
       DATABASE_URL: postgresql+asyncpg://lecturelog:lecturelog@db:5432/lecturelog
-      UPLOAD_DIR: /app/data
+      S3_INTERNAL_ENDPOINT: http://minio:9000
+      S3_BUCKET: lectures
+      S3_ACCESS_KEY: minioadmin
+      S3_SECRET_KEY: minioadmin
+      # S3_PUBLIC_ENDPOINT не задан -> presigned выключен (автономный режим):
+      # /uploads и /result-url отдают 409, стрим GET /result работает.
     ports:
       - "8000:8000"
-    volumes:
-      - ./:/app
-      - appdata:/app/data
 
 volumes:
   pgdata:
-  appdata:
+  miniodata:
