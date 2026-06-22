@@ -3,6 +3,7 @@ from fastapi.testclient import TestClient
 
 from lecturelog.api import dependencies as deps
 from lecturelog.api.app import create_app
+from lecturelog.application.usage_accumulator import UsageAccumulator
 from lecturelog.domain.enums import PipelineStage, TaskStatus
 from lecturelog.domain.models import Task
 from tests.support.fake_storage import FakeStorage
@@ -190,6 +191,44 @@ def test_status_returns_fields(client, repo):
     assert body["stage"] == "structurize"
     assert body["progress_pct"] == 55
     assert body["usage"] == {"transcribe": {"audio_seconds": 90, "provider": "groq", "raw": {}}}
+
+
+def test_status_usage_wire_identical_to_accumulator(client, repo):
+    # Реальный выход аккумулятора: transcribe пишет "model": None ВСЕГДА,
+    # structurize по by_model, total с осями режима. GET /tasks/{id} обязан
+    # отдавать usage БАЙТ-В-БАЙТ как он лежит в task.usage (как делал старый роут,
+    # отдававший task.usage напрямую). В частности transcribe.model:null НЕ должен
+    # пропадать из-за response_model_exclude_none.
+    acc = UsageAccumulator()
+    acc.set_mode("audio", "document")
+    # provider/model без явного model -> payload.get("model") == None.
+    acc.record_transcribe({"audio_seconds": 120, "provider": "groq"})
+    acc.record_llm("structurize", {"model": "gemini-3", "prompt": 100, "output": 40})
+    acc.compute_total()
+    expected_usage = acc.usage
+    # Инвариант реального выхода: ключ model присутствует и равен None.
+    assert expected_usage["transcribe"]["model"] is None
+
+    repo.tasks["t"] = Task(
+        task_id="t",
+        source_kind="audio",
+        status=TaskStatus.PROCESSING,
+        stage=PipelineStage.STRUCTURIZE,
+        usage=expected_usage,
+    )
+    r = client.get("/api/v1/tasks/t")
+    assert r.status_code == 200
+    # Тело usage идентично исходному dict аккумулятора, включая "model": null.
+    assert r.json()["usage"] == expected_usage
+
+
+def test_status_empty_usage_is_empty_object(client, repo):
+    # Пустой usage ({}) должен сериализоваться как пустой объект (как раньше),
+    # а не как Usage() со всеми None/дефолтными ключами.
+    repo.tasks["t"] = Task(task_id="t", source_kind="audio", usage={})
+    r = client.get("/api/v1/tasks/t")
+    assert r.status_code == 200
+    assert r.json()["usage"] == {}
 
 
 def test_transcript_invalid_format_400(client):
