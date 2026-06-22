@@ -25,6 +25,9 @@ class InMemoryRepo:
     async def mark_stale_as_interrupted(self):
         return 0
 
+    async def delete(self, tid):
+        self.tasks.pop(tid, None)
+
 
 class NoopWorker:
     def __init__(self):
@@ -376,3 +379,45 @@ def test_result_url_not_ready_404(client_public, repo):
     repo.tasks["t"] = Task(task_id="t", source_kind="audio")
     r = client_public.get("/api/v1/tasks/t/result-url?filename=X")
     assert r.status_code == 404
+
+
+def test_delete_existing_returns_204_and_cleans_all(client, repo):
+    repo.tasks["t"] = Task(
+        task_id="t",
+        source_kind="s3_object",
+        source_key="uploads/u/lec.mp3",
+        status=TaskStatus.DONE,
+        result_path="results/t/result.zip",
+    )
+    client._storage.objects["results/t/result.zip"] = b"zip"
+    client._storage.objects["results/t/media/0.mp3"] = b"m"
+    client._storage.objects["uploads/u/lec.mp3"] = b"src"
+
+    r = client.delete("/api/v1/tasks/t")
+    assert r.status_code == 204
+    assert r.content == b""
+    assert client._storage.objects == {}
+    assert "t" not in repo.tasks
+
+
+def test_delete_is_idempotent_returns_204_on_repeat(client, repo):
+    repo.tasks["t"] = Task(task_id="t", source_kind="audio")
+    client._storage.objects["results/t/result.zip"] = b"zip"
+    assert client.delete("/api/v1/tasks/t").status_code == 204
+    # Повтор на уже удалённую задачу: 204, НЕ 404/500.
+    assert client.delete("/api/v1/tasks/t").status_code == 204
+
+
+def test_delete_unknown_task_returns_204(client):
+    # Никогда не создавалась -> всё равно 2xx (платформенный ретрай безопасен).
+    r = client.delete("/api/v1/tasks/never-existed")
+    assert r.status_code == 204
+
+
+def test_delete_audio_task_keeps_foreign_uploads(client, repo):
+    repo.tasks["t"] = Task(task_id="t", source_kind="audio")  # без source_key
+    client._storage.objects["results/t/result.zip"] = b"zip"
+    client._storage.objects["uploads/other/keep.mp3"] = b"keep"
+    assert client.delete("/api/v1/tasks/t").status_code == 204
+    assert "results/t/result.zip" not in client._storage.objects
+    assert "uploads/other/keep.mp3" in client._storage.objects
