@@ -121,6 +121,11 @@ class Storage(ABC):
         """Presigned GET URL. Если публичный endpoint не задан — None
         (наружу presigned не выдаётся, работает только стрим)."""
 
+    @abstractmethod
+    async def delete_prefix(self, prefix: str) -> None:
+        """Удалить все объекты бакета с данным ключевым префиксом.
+        Идемпотентно: отсутствие объектов под префиксом — не ошибка (no-op)."""
+
 
 class WebhookNotifier(ABC):
     @abstractmethod
