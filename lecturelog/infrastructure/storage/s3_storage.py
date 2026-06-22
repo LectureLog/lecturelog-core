@@ -135,3 +135,14 @@ class S3Storage(Storage):
                         keys = []
             if keys:
                 await client.delete_objects(Bucket=self._bucket, Delete={"Objects": keys})
+
+    async def list_keys(self, prefix: str) -> list[str]:
+        # Листинг с пагинацией: собираем obj["Key"] со всех страниц.
+        # Страница без Contents (пустой префикс) не должна падать — отсюда get("Contents", []).
+        async with self._client_factory() as client:
+            paginator = client.get_paginator("list_objects_v2")
+            keys: list[str] = []
+            async for page in paginator.paginate(Bucket=self._bucket, Prefix=prefix):
+                for obj in page.get("Contents", []):
+                    keys.append(obj["Key"])
+            return keys
