@@ -18,6 +18,8 @@ class TaskRow(Base):
 
     task_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     source_kind: Mapped[str] = mapped_column(String(32))
+    # Ключ исходника в MinIO для последующей чистки при DELETE; NULL для не-s3 источников.
+    source_key: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     status: Mapped[str] = mapped_column(String(32))
     stage: Mapped[str | None] = mapped_column(String(32), nullable=True)
     progress_pct: Mapped[int] = mapped_column(Integer, default=0)
@@ -33,6 +35,7 @@ def task_to_row(task: Task) -> TaskRow:
     return TaskRow(
         task_id=task.task_id,
         source_kind=task.source_kind,
+        source_key=task.source_key,
         status=task.status.value,
         stage=task.stage.value if task.stage else None,
         progress_pct=task.progress_pct,
@@ -48,6 +51,7 @@ def row_to_task(row: TaskRow) -> Task:
     return Task(
         task_id=row.task_id,
         source_kind=row.source_kind,
+        source_key=row.source_key,
         status=TaskStatus(row.status),
         stage=PipelineStage(row.stage) if row.stage else None,
         progress_pct=row.progress_pct,

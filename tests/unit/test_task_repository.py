@@ -47,6 +47,14 @@ async def test_update_persists_new_state(repo):
 
 
 @pytest.mark.asyncio
+async def test_source_key_round_trips(repo):
+    task = Task(task_id="s", source_kind="s3_object", source_key="uploads/u/lec.mp3")
+    await repo.create(task)
+    fetched = await repo.get("s")
+    assert fetched.source_key == "uploads/u/lec.mp3"
+
+
+@pytest.mark.asyncio
 async def test_mark_stale_as_interrupted_only_affects_processing(repo):
     t_proc = Task(task_id="p", source_kind="audio", status=TaskStatus.PROCESSING)
     t_done = Task(task_id="d", source_kind="audio", status=TaskStatus.DONE)
