@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 
 from pydantic import BaseModel, Field
 
-from lecturelog.domain.enums import PipelineStage, TaskStatus
+from lecturelog.domain.enums import ErrorCode, PipelineStage, TaskStatus
 
 
 def _utcnow() -> datetime:
@@ -38,6 +38,8 @@ class Task(BaseModel):
     stage: PipelineStage | None = None
     progress_pct: int = 0
     error: str | None = None
+    # Машинный код ошибки (классифицируется при переходе в FAILED). None — нет ошибки.
+    error_code: ErrorCode | None = None
     result_path: str | None = None
     usage: dict = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=_utcnow)
