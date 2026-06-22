@@ -29,9 +29,9 @@ def test_hmac_signature_is_deterministic():
 def test_body_is_thin_done():
     body_bytes, _ = build_signed_request(_URL, _SECRET, "t1", TaskStatus.DONE, None)
     parsed = json.loads(body_bytes)
-    assert parsed == {"task_id": "t1", "status": "done", "error": None}
+    assert parsed == {"task_id": "t1", "status": "done", "error": None, "error_code": None}
     # Никаких лишних полей (usage/result_path).
-    assert set(parsed.keys()) == {"task_id", "status", "error"}
+    assert set(parsed.keys()) == {"task_id", "status", "error", "error_code"}
 
 
 def test_body_includes_error_on_failed():
@@ -39,6 +39,26 @@ def test_body_includes_error_on_failed():
     parsed = json.loads(body_bytes)
     assert parsed["status"] == "failed"
     assert parsed["error"] == "boom"
+
+
+def test_body_includes_error_code():
+    body_bytes, _ = build_signed_request(
+        _URL, _SECRET, "t1", TaskStatus.FAILED, "boom", error_code="rate_limit"
+    )
+    parsed = json.loads(body_bytes)
+    assert parsed == {
+        "task_id": "t1",
+        "status": "failed",
+        "error": "boom",
+        "error_code": "rate_limit",
+    }
+    assert set(parsed.keys()) == {"task_id", "status", "error", "error_code"}
+
+
+def test_error_code_none_on_done():
+    body_bytes, _ = build_signed_request(_URL, _SECRET, "t1", TaskStatus.DONE, None)
+    parsed = json.loads(body_bytes)
+    assert parsed["error_code"] is None
 
 
 def test_body_non_ascii_error_serialization_contract():
@@ -52,7 +72,7 @@ def test_body_non_ascii_error_serialization_contract():
 
     # Политика сериализации: ensure_ascii=False + UTF-8 (читаемое тело, не \uXXXX-эскейпы).
     expected_body = json.dumps(
-        {"task_id": "t1", "status": "failed", "error": error_text},
+        {"task_id": "t1", "status": "failed", "error": error_text, "error_code": None},
         ensure_ascii=False,
         separators=(",", ":"),
         sort_keys=True,
@@ -64,7 +84,12 @@ def test_body_non_ascii_error_serialization_contract():
 
     # Тело декодируется обратно с сохранённым не-ASCII текстом.
     parsed = json.loads(body_bytes.decode("utf-8"))
-    assert parsed == {"task_id": "t1", "status": "failed", "error": error_text}
+    assert parsed == {
+        "task_id": "t1",
+        "status": "failed",
+        "error": error_text,
+        "error_code": None,
+    }
 
 
 @pytest.mark.asyncio

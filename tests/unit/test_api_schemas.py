@@ -1,6 +1,34 @@
 from lecturelog.api.schemas import CreateTaskResponse, TaskStatusResponse
-from lecturelog.domain.enums import PipelineStage, TaskStatus
+from lecturelog.domain.enums import ErrorCode, PipelineStage, TaskStatus
 from lecturelog.domain.models import Task
+
+
+def test_status_response_exposes_error_code():
+    task = Task(
+        task_id="e",
+        source_kind="audio",
+        status=TaskStatus.FAILED,
+        error="boom",
+        error_code=ErrorCode.BAD_INPUT,
+    )
+    dto = TaskStatusResponse.from_task(task)
+    assert dto.error_code == "bad_input"
+
+
+def test_status_response_error_code_none():
+    dto = TaskStatusResponse.from_task(Task(task_id="e", source_kind="audio"))
+    assert dto.error_code is None
+
+
+def test_wire_body_includes_error_code():
+    task = Task(
+        task_id="e",
+        source_kind="audio",
+        status=TaskStatus.FAILED,
+        error="boom",
+        error_code=ErrorCode.BAD_INPUT,
+    )
+    assert TaskStatusResponse.wire_body(task)["error_code"] == "bad_input"
 
 
 def test_status_response_from_domain_task():

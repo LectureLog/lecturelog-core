@@ -22,6 +22,7 @@ def build_signed_request(
     task_id: str,
     status: TaskStatus,
     error: str | None,
+    error_code: str | None = None,
 ) -> tuple[bytes, str]:
     """Собрать тонкое тело и его HMAC-SHA256 подпись.
 
@@ -30,8 +31,8 @@ def build_signed_request(
     Подписываются ровно те байты, что уйдут в POST.
     Возвращает (body_bytes, signature_hex).
     """
-    # Ключ "error" присутствует всегда (None если статус не failed) — тело стабильно.
-    payload = {"task_id": task_id, "status": status.value, "error": error}
+    # Ключи "error"/"error_code" присутствуют всегда (None вне ошибочного статуса) — тело стабильно.
+    payload = {"task_id": task_id, "status": status.value, "error": error, "error_code": error_code}
     # Контракт кодировки с платформой: UTF-8 + ensure_ascii=False (кириллица в error не эскейпится).
     body = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
     body_bytes = body.encode("utf-8")
@@ -60,10 +61,16 @@ class HttpWebhookNotifier(WebhookNotifier):
         self._client = client
         self._timeout = timeout
 
-    async def notify(self, task_id: str, status: TaskStatus, error: str | None = None) -> None:
+    async def notify(
+        self,
+        task_id: str,
+        status: TaskStatus,
+        error: str | None = None,
+        error_code: str | None = None,
+    ) -> None:
         try:
             body_bytes, signature = build_signed_request(
-                self._callback_url, self._secret, task_id, status, error
+                self._callback_url, self._secret, task_id, status, error, error_code
             )
             headers = {
                 SIGNATURE_HEADER: signature,

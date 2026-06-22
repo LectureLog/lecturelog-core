@@ -133,6 +133,13 @@ class Storage(ABC):
 
 class WebhookNotifier(ABC):
     @abstractmethod
-    async def notify(self, task_id: str, status: TaskStatus, error: str | None = None) -> None:
+    async def notify(
+        self,
+        task_id: str,
+        status: TaskStatus,
+        error: str | None = None,
+        error_code: str | None = None,
+    ) -> None:
         """Best-effort пуш платформе о терминальном статусе задачи.
+        error_code — машинный код ошибки (rate_limit/bad_input/internal) или None.
         Реализация НЕ должна выбрасывать наружу и НЕ должна блокировать дольше своего таймаута."""

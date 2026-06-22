@@ -5,7 +5,7 @@ from datetime import datetime
 from sqlalchemy import JSON, DateTime, Integer, String
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
-from lecturelog.domain.enums import PipelineStage, TaskStatus
+from lecturelog.domain.enums import ErrorCode, PipelineStage, TaskStatus
 from lecturelog.domain.models import Task
 
 
@@ -24,6 +24,8 @@ class TaskRow(Base):
     stage: Mapped[str | None] = mapped_column(String(32), nullable=True)
     progress_pct: Mapped[int] = mapped_column(Integer, default=0)
     error: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Машинный код ошибки; портативный String(32), не нативный enum — guard-тест на SQLite.
+    error_code: Mapped[str | None] = mapped_column(String(32), nullable=True)
     result_path: Mapped[str | None] = mapped_column(String, nullable=True)
     # Портативный JSON (а не JSONB) — guard-тест строит схему на SQLite.
     usage: Mapped[dict] = mapped_column(JSON, default=dict)
@@ -40,6 +42,7 @@ def task_to_row(task: Task) -> TaskRow:
         stage=task.stage.value if task.stage else None,
         progress_pct=task.progress_pct,
         error=task.error,
+        error_code=task.error_code.value if task.error_code else None,
         result_path=task.result_path,
         usage=task.usage,
         created_at=task.created_at,
@@ -56,6 +59,7 @@ def row_to_task(row: TaskRow) -> Task:
         stage=PipelineStage(row.stage) if row.stage else None,
         progress_pct=row.progress_pct,
         error=row.error,
+        error_code=ErrorCode(row.error_code) if row.error_code else None,
         result_path=row.result_path,
         usage=row.usage or {},
         created_at=row.created_at,

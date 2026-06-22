@@ -1,4 +1,4 @@
-from lecturelog.domain.enums import PipelineStage, TaskStatus
+from lecturelog.domain.enums import ErrorCode, PipelineStage, TaskStatus
 from lecturelog.domain.models import Task
 from lecturelog.infrastructure.persistence.orm import row_to_task, task_to_row
 
@@ -52,3 +52,20 @@ def test_round_trip_preserves_error_and_result():
     assert restored.error == "boom"
     assert restored.result_path == "/r.zip"
     assert restored.stage is None
+
+
+def test_round_trip_preserves_error_code():
+    task = Task(
+        task_id="ec",
+        source_kind="audio",
+        status=TaskStatus.FAILED,
+        error="boom",
+        error_code=ErrorCode.RATE_LIMIT,
+    )
+    restored = row_to_task(task_to_row(task))
+    assert restored.error_code is ErrorCode.RATE_LIMIT
+
+
+def test_round_trip_error_code_none():
+    restored = row_to_task(task_to_row(Task(task_id="n", source_kind="audio")))
+    assert restored.error_code is None

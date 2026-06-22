@@ -5,6 +5,7 @@ import traceback
 from collections.abc import Callable
 from pathlib import Path
 
+from lecturelog.application.error_classifier import classify_error
 from lecturelog.application.factories import cutter_factory
 from lecturelog.application.progress_plan import ProgressPlan
 from lecturelog.application.usage_accumulator import UsageAccumulator
@@ -65,7 +66,15 @@ class PipelineService:
         self._storage = storage
 
     async def _set(
-        self, task: Task, *, status=None, stage=None, progress=None, error=None, result_path=None
+        self,
+        task: Task,
+        *,
+        status=None,
+        stage=None,
+        progress=None,
+        error=None,
+        error_code=None,
+        result_path=None,
     ):
         if status is not None:
             task.status = status
@@ -75,6 +84,9 @@ class PipelineService:
             task.progress_pct = progress
         if error is not None:
             task.error = error
+        # Машинный код ошибки ставится только при наличии (на успешных стадиях остаётся None).
+        if error_code is not None:
+            task.error_code = error_code
         if result_path is not None:
             task.result_path = result_path
         await self._repo.update(task)
@@ -84,7 +96,12 @@ class PipelineService:
         # (защита от лежащей платформы; надёжность — на fallback-поллинге платформы).
         if status in _TERMINAL and self._webhook is not None:
             try:
-                await self._webhook.notify(task.task_id, status, error=task.error)
+                await self._webhook.notify(
+                    task.task_id,
+                    status,
+                    error=task.error,
+                    error_code=task.error_code.value if task.error_code else None,
+                )
             except Exception as exc:  # noqa: BLE001 — намеренно глушим любой сбой нотификации
                 logger.warning("Вебхук для task=%s не доставлен: %s", task.task_id, exc)
 
@@ -285,7 +302,12 @@ class PipelineService:
             # чтобы он доехал на FAILED/INTERRUPTED.
             acc.compute_total()
             task.usage = acc.usage
+            # Классифицируем исключение в машинный код для платформы (retry-решение).
+            code = classify_error(exc)
             await self._set(
-                task, status=TaskStatus.FAILED, error=f"{exc}\n{traceback.format_exc()}"
+                task,
+                status=TaskStatus.FAILED,
+                error=f"{exc}\n{traceback.format_exc()}",
+                error_code=code,
             )
             raise

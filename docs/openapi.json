@@ -201,6 +201,17 @@
             ],
             "title": "Error"
           },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          },
           "progress_pct": {
             "title": "Progress Pct",
             "type": "integer"
@@ -241,6 +252,7 @@
           "stage",
           "progress_pct",
           "error",
+          "error_code",
           "result_path"
         ],
         "title": "TaskStatusResponse",
