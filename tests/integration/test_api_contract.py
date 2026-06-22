@@ -269,6 +269,26 @@ def test_result_streams_zip_from_s3(client, repo):
     assert r.content == b"PK\x03\x04zip"
 
 
+def test_result_cleans_up_tmp_file(client, repo, tmp_path):
+    # Disk leak: скачанный во work_dir ZIP должен удаляться после отдачи,
+    # а не накапливаться на каждый запрос/ретрай.
+    client._storage.objects["results/t/result.zip"] = b"PK\x03\x04zip"
+    repo.tasks["t"] = Task(
+        task_id="t",
+        source_kind="audio",
+        status=TaskStatus.DONE,
+        result_path="results/t/result.zip",
+    )
+    results_tmp = tmp_path / "results_tmp"
+    for _ in range(3):
+        r = client.get("/api/v1/tasks/t/result")
+        assert r.status_code == 200
+        assert r.content == b"PK\x03\x04zip"
+    # После всех запросов tmp-каталог не должен накапливать файлы.
+    leftover = list(results_tmp.rglob("*.zip")) if results_tmp.exists() else []
+    assert leftover == []
+
+
 def test_result_url_with_public_returns_presigned(client_public, repo):
     client_public._storage.objects["results/t/result.zip"] = b"zip"
     repo.tasks["t"] = Task(

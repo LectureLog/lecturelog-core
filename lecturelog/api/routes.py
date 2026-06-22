@@ -6,6 +6,7 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
+from starlette.background import BackgroundTask
 
 from lecturelog.api.dependencies import (
     get_gemini,
@@ -280,9 +281,17 @@ async def get_task_result(
     # MinIO клиенту не виден — работает даже без public endpoint (дефолт автономии).
     use_case = GetResultUseCase(repository=repository)
     key = await use_case.execute(task_id)
-    tmp = work_dir / "results_tmp" / task_id / "result.zip"
+    # Уникальное имя на запрос: параллельные обращения к одному task_id не затирают
+    # и не удаляют tmp-файл друг друга.
+    tmp = work_dir / "results_tmp" / task_id / f"{uuid4().hex}.zip"
     await storage.download_file(key, tmp)
-    return FileResponse(path=tmp, filename="result.zip", media_type="application/zip")
+    # Удаляем tmp после отдачи (иначе disk leak: полная копия ZIP на каждый запрос).
+    return FileResponse(
+        path=tmp,
+        filename="result.zip",
+        media_type="application/zip",
+        background=BackgroundTask(lambda: tmp.unlink(missing_ok=True)),
+    )
 
 
 @router.get("/tasks/{task_id}/result-url", response_model=ResultUrlResponse)
