@@ -48,3 +48,7 @@ class FakeStorage(Storage):
         # Идемпотентно: удаляем все ключи с данным префиксом; пустой результат — no-op.
         for key in [k for k in self.objects if k.startswith(prefix)]:
             del self.objects[key]
+
+    async def list_keys(self, prefix: str) -> list[str]:
+        # Отсортированный список ключей с данным префиксом; пусто -> [].
+        return sorted(k for k in self.objects if k.startswith(prefix))

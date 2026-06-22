@@ -58,3 +58,20 @@ async def test_delete_prefix_removes_matching_and_is_idempotent(tmp_path):
     # Идемпотентность: повтор по уже пустому префиксу не падает.
     await s.delete_prefix("results/t/")
     await s.delete_prefix("nothing/here/")
+
+
+@pytest.mark.asyncio
+async def test_list_keys_returns_matching_sorted_and_idempotent(tmp_path):
+    s = FakeStorage()
+    src = tmp_path / "x.bin"
+    src.write_bytes(b"d")
+    await s.upload_file(src, "results/t/output/b.txt")
+    await s.upload_file(src, "results/t/output/a.txt")
+    await s.upload_file(src, "uploads/u/lecture.mp3")
+
+    keys = await s.list_keys("results/t/")
+    # Только ключи с искомым префиксом, отсортированы; чужой префикс не попадает.
+    assert keys == ["results/t/output/a.txt", "results/t/output/b.txt"]
+
+    # Пустой результат -> [].
+    assert await s.list_keys("nothing/here/") == []
