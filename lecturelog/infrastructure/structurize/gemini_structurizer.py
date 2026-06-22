@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from lecturelog.domain.models import Section, Topic
-from lecturelog.domain.ports import ProgressCallback, Structurizer
+from lecturelog.domain.ports import ProgressCallback, Structurizer, UsageCallback
 from lecturelog.infrastructure.llm.gemini_client import GeminiClient
 from lecturelog.infrastructure.srt import extract_srt_fragment
 from lecturelog.infrastructure.structurize.slide_backfill import backfill_missing_slides
@@ -70,6 +70,7 @@ class GeminiStructurizer(Structurizer):
         srt_content: str,
         split_prompt_template: str,
         semaphore: asyncio.Semaphore,
+        on_usage: UsageCallback | None = None,
     ) -> tuple[int, list[dict[str, Any]]]:
         """Разбивает одну тему на подтемы по 3-5 минут."""
         start = str(topic_data["start"])
@@ -81,6 +82,7 @@ class GeminiStructurizer(Structurizer):
                 raw = await self._gemini.call(
                     prompt=f"{split_prompt_template}\n{fragment}",
                     models=self._subsplit_models,
+                    on_usage=on_usage,
                 )
             sections = _parse_json(raw)
             if not isinstance(sections, list) or not sections:
@@ -102,6 +104,7 @@ class GeminiStructurizer(Structurizer):
         slide_bytes: list[bytes],
         slide_indices: list[int],
         semaphore: asyncio.Semaphore,
+        on_usage: UsageCallback | None = None,
     ) -> tuple[int, dict[int, list[int]]]:
         """Точный slide match для подтем одной темы."""
         if not slide_indices or not slide_bytes:
@@ -125,6 +128,7 @@ class GeminiStructurizer(Structurizer):
                     prompt=prompt,
                     models=self._subsplit_models,
                     images=topic_slide_bytes,
+                    on_usage=on_usage,
                 )
             parsed = _parse_json(raw)
             if not isinstance(parsed, dict):
@@ -161,6 +165,7 @@ class GeminiStructurizer(Structurizer):
         slide_indices: list[int],
         slide_bytes: list[bytes],
         semaphore: asyncio.Semaphore,
+        on_usage: UsageCallback | None = None,
     ) -> tuple[int, Section]:
         title = str(section_data["title"])
         start = str(section_data["start"])
@@ -179,6 +184,7 @@ class GeminiStructurizer(Structurizer):
                 prompt=prompt,
                 models=self._render_models,
                 images=related_images if related_images else None,
+                on_usage=on_usage,
             )
         return (
             global_index,
@@ -197,6 +203,7 @@ class GeminiStructurizer(Structurizer):
         slide_images: list[Path],
         output_dir: Path,
         on_progress: ProgressCallback | None = None,
+        on_usage: UsageCallback | None = None,
     ) -> list[Topic]:
         output_dir.mkdir(parents=True, exist_ok=True)
         srt_content = srt_path.read_text(encoding="utf-8")
@@ -205,7 +212,9 @@ class GeminiStructurizer(Structurizer):
         # ── Этап 1: Topic split (0% → 10%) ─────────────────────────
         await _emit_progress(on_progress, 2)
         split_topics_prompt = f"{self._read_prompt('split_topics_v1.md')}\n{srt_content}"
-        split_raw = await self._gemini.call(prompt=split_topics_prompt, models=self._split_models)
+        split_raw = await self._gemini.call(
+            prompt=split_topics_prompt, models=self._split_models, on_usage=on_usage
+        )
         topics_data = _parse_json(split_raw)
         if not isinstance(topics_data, list):
             raise ValueError("Ответ split_topics должен быть JSON-массивом")
@@ -222,6 +231,7 @@ class GeminiStructurizer(Structurizer):
                     srt_content=srt_content,
                     split_prompt_template=split_section_prompt,
                     semaphore=subsplit_sem,
+                    on_usage=on_usage,
                 )
             )
             for i, topic in enumerate(topics_data)
@@ -249,6 +259,7 @@ class GeminiStructurizer(Structurizer):
                 prompt=rough_prompt,
                 models=self._subsplit_models,
                 images=slide_bytes,
+                on_usage=on_usage,
             )
             rough_mapping = _parse_json(rough_raw)
             if not isinstance(rough_mapping, dict):
@@ -273,6 +284,7 @@ class GeminiStructurizer(Structurizer):
                         slide_bytes=slide_bytes,
                         slide_indices=topic_slides[i],
                         semaphore=subsplit_sem,
+                        on_usage=on_usage,
                     )
                 )
                 for i in range(len(topics_data))
@@ -310,6 +322,7 @@ class GeminiStructurizer(Structurizer):
                             slide_indices=section_slides,
                             slide_bytes=slide_bytes,
                             semaphore=render_sem,
+                            on_usage=on_usage,
                         )
                     )
                 )

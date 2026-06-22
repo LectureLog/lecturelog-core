@@ -62,8 +62,11 @@ cp .env.example .env          # впишите реальные GROQ_API_KEYS и
 docker compose up --build
 ```
 
-Поднимутся два сервиса: `db` (Postgres 16) и `api`. Миграции применяются автоматически
-на старте контейнера. API доступен на `http://localhost:8000`.
+Поднимутся сервисы: `db` (Postgres 16), `minio` (S3-хранилище лекций), `minio-init`
+(разовое создание бакета) и `api`. Миграции применяются автоматически на старте контейнера.
+По умолчанию MinIO наружу не выставлен (`S3_PUBLIC_ENDPOINT` не задан) — движок ходит к нему
+по internal-endpoint внутри docker-сети, presigned-эндпоинты выключены, работает автономно.
+API доступен на `http://localhost:8000`.
 
 В образе уже присутствуют системные зависимости видео-режима: `ffmpeg`/`ffprobe`
 (нарезка фрагментов и извлечение кадров) и `yt-dlp` (скачивание видео по URL).
@@ -79,18 +82,42 @@ curl http://localhost:8000/api/v1/health
 
 Базовый префикс — `/api/v1`.
 
+### Машиночитаемый контракт (OpenAPI)
+
+Схема API доступна в машинном виде и служит источником правды для генерации
+типизированного клиента в platform-api.
+
+- **Живая схема** (при запущенном сервере): `GET /openapi.json` — сама спека,
+  `/docs` — Swagger UI, `/redoc` — ReDoc. Эти эндпоинты FastAPI отдаёт на корне,
+  вне префикса `/api/v1`.
+- **Снапшот в репозитории**: `docs/openapi.json` — закоммиченная актуальная версия
+  схемы (типы `usage` в `GET /tasks/{id}`, коды ответов, `summary`/`tags`).
+- **Регенерация локально**: `python scripts/export_openapi.py` обновляет
+  `docs/openapi.json` без запуска сервера и без реальных секретов (используются
+  env-заглушки).
+- **Проверка в CI**: джоба `openapi` сверяет снапшот с кодом
+  (`git diff --exit-code`) — если API изменился, а схему не перегенерировали,
+  сборка краснеет.
+- **Внеконтрактные флоу**: `docs/api-contract.md` описывает то, чего нет в OpenAPI
+  by design — presigned-загрузку/скачивание, исходящий вебхук, два endpoint'а
+  MinIO, HMAC-контур доверия и автономные режимы.
+
 | Метод  | Путь                                     | Описание                                                                                                                                         |
 | ------ | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `POST` | `/tasks`                                 | Создать задачу. multipart: ровно один из `audio` (file) / `video` (file) / `video_url` (form); опционально `slides` (file) и `no_slides` (form, bool). Возвращает `{"task_id": "<hex>"}`. |
-| `GET`  | `/tasks/{id}`                            | Статус задачи: `{task_id, stage, progress_pct, error, result_path}`.                                                                             |
+| `POST` | `/tasks`                                 | Создать задачу. multipart: ровно один источник — `audio` (file) / `video` (file) / `video_url` (form) / `s3_key` (form, ссылка на загруженный в MinIO объект под `uploads/`; для него ещё `media`: `audio`\|`video`); опционально `slides` (file) и `no_slides` (form, bool). Возвращает `{"task_id": "<hex>"}`. |
+| `POST` | `/uploads`                               | Выдать presigned PUT URL для загрузки исходника платформой в `uploads/`. Тело: `{filename}`. Ответ: `{key, url, expires_in}`. `409`, если `S3_PUBLIC_ENDPOINT` не задан. |
+| `GET`  | `/tasks/{id}`                            | Статус задачи: `{task_id, stage, progress_pct, error, result_path, usage}`. `result_path` — S3-ключ (`results/<task_id>/result.zip`). `usage` — разбивка расхода ресурсов по стадиям и моделям (см. ниже). |
 | `GET`  | `/tasks/{id}/transcript?format=srt\|txt` | Транскрипт (SRT или plain text).                                                                                                                 |
-| `GET`  | `/tasks/{id}/result`                     | Готовый ZIP (`application/zip`).                                                                                                                 |
+| `GET`  | `/tasks/{id}/result`                     | Готовый ZIP (`application/zip`), стримом из S3 (MinIO клиенту не виден; дефолт для консоли/автономии).                                            |
+| `GET`  | `/tasks/{id}/result-url`                 | Presigned GET URL на готовый ZIP: `{url, expires_in}`. Опц. параметр `filename` зашивается в `Content-Disposition` (имя `<filename>.zip`). `409`, если `S3_PUBLIC_ENDPOINT` не задан; `404`, если результат не готов. |
 | `GET`  | `/health`                                | Healthcheck.                                                                                                                                     |
 
 ### Коды ответов
 
-- `POST /tasks`: `200` — успех; `400` — не ровно один источник, либо `video_url` без http/https-схемы.
+- `POST /tasks`: `200` — успех; `400` — не ровно один источник, `video_url` без http/https-схемы, `media` не `audio`/`video` или `s3_key` вне `uploads/`.
+- `POST /uploads`: `200` — `{key, url, expires_in}`; `409` — `S3_PUBLIC_ENDPOINT` не задан.
 - `GET /tasks/{id}`: `200` — статус; `404` — задача не найдена.
+- `GET /tasks/{id}/result-url`: `200` — `{url, expires_in}`; `409` — `S3_PUBLIC_ENDPOINT` не задан; `404` — результат не готов.
 - `GET /tasks/{id}/transcript`:
   - `400` — `format` не `srt`/`txt`: `{"error":"invalid_format","allowed":["srt","txt"]}`
   - `404` — задачи нет: `{"error":"task_not_found"}`
@@ -98,6 +125,41 @@ curl http://localhost:8000/api/v1/health
   - `202` — ещё не готово: `{"status":"in_progress","stage":...,"progress":...}`
   - `200` — готово (SRT-файл или plain text).
 - `GET /tasks/{id}/result`: `200` — ZIP; `404` — результат не готов / файл не найден / задачи нет.
+
+### Учёт расхода ресурсов (`usage`)
+
+Ответ `GET /tasks/{id}` содержит поле `usage` — JSON с разбивкой потраченных ресурсов
+по стадиям и моделям (стадия × модель). Это ядро движка, а не платформенная фича, поэтому
+видно всем клиентам, включая консольный режим. Накапливается инкрементально по мере прохождения
+стадий: на `failed`/`interrupted` содержит частично накопленное.
+
+- `transcribe` — `{audio_seconds, provider, model}`.
+- `structurize`, `video_slides` — `{provider, by_model: {<model>: {prompt, output, calls}}}`
+  (стадия `video_slides` присутствует только если слайды извлекались из видеоряда).
+- `total` — сводка: `{audio_seconds, gemini_prompt, gemini_output, source, slides_origin}`,
+  где `source` — `audio`\|`video`, а `slides_origin` — `none`\|`document`\|`video_extracted`.
+
+### Вебхук на терминальные события (опционально)
+
+Если задан `PLATFORM_CALLBACK_URL`, на каждое терминальное событие лекции (`done`/`failed`/`interrupted`)
+движок шлёт одну исходящую `POST` — fire-and-forget, с коротким таймаутом и без ретраев.
+Без `PLATFORM_CALLBACK_URL` движок работает автономно как раньше (поллинг `GET /tasks/{id}` всегда доступен).
+
+Тело тонкое — `{task_id, status, error?}` (`status`: `done`\|`failed`\|`interrupted`); полное состояние
+(`usage`, `result_path`) платформа добирает через `GET /tasks/{id}`. Тело подписывается
+HMAC-SHA256 секретом `LECTURELOG_WEBHOOK_SECRET`, подпись — в заголовке `X-Webhook-Signature`.
+
+### Хранилище и загрузка через MinIO
+
+Исходники и результаты лежат в S3-совместимом хранилище (MinIO): исходники — под `uploads/`,
+результаты — под `results/<task_id>/result.zip`. Возможны два сценария.
+
+- **Автономный (дефолт)**: исходник передаётся multipart-файлом в `POST /tasks`, результат
+  забирается стримом через `GET /tasks/{id}/result`. MinIO наружу не выставлен, presigned-ссылки
+  не нужны — так работает консольный клиент.
+- **С платформой**: платформа берёт presigned PUT через `POST /uploads`, грузит объект в `uploads/`
+  напрямую в MinIO, затем создаёт задачу через `POST /tasks` с `s3_key`; готовый результат отдаётся
+  presigned GET через `GET /tasks/{id}/result-url`. Активно только при заданном `S3_PUBLIC_ENDPOINT`.
 
 ### Клиентский скрипт
 
@@ -161,8 +223,16 @@ python scripts/submit_task.py --base http://my-host:8000/api/v1 status <task_id>
 | `GEMINI_MODELS_*`      | Приоритетные списки моделей по этапам (fallback при 429). |
 | `GEMINI_CONCURRENCY_*` | Параллельность вызовов Gemini по этапам.                  |
 | `DATABASE_URL`         | Async-URL Postgres (`postgresql+asyncpg://...`).          |
-| `UPLOAD_DIR`           | Каталог для загрузок и артефактов.                        |
+| `S3_INTERNAL_ENDPOINT` | Endpoint MinIO для движка внутри docker-сети (напр. `http://minio:9000`). |
+| `S3_PUBLIC_ENDPOINT`   | Опц. публичный хост для presigned-ссылок наружу. Не задан → presigned не выдаётся (`/uploads` и `/result-url` отдают 409), работает только стрим. |
+| `S3_BUCKET`            | Бакет хранилища лекций.                                   |
+| `S3_ACCESS_KEY`        | Access key MinIO/S3.                                      |
+| `S3_SECRET_KEY`        | Secret key MinIO/S3.                                      |
+| `S3_REGION`            | Регион S3 (по умолчанию `us-east-1`).                    |
+| `S3_PRESIGN_EXPIRY`    | TTL presigned-ссылок в секундах (по умолчанию `3600`).   |
 | `MAX_CONCURRENT_TASKS` | Сколько лекций обрабатывать одновременно.                 |
+| `PLATFORM_CALLBACK_URL`| Опц. URL для вебхука на терминальные события. Не задан → движок работает автономно. |
+| `LECTURELOG_WEBHOOK_SECRET` | Секрет для HMAC-SHA256 подписи тела вебхука (заголовок `X-Webhook-Signature`). |
 
 ## Ключи API и лимиты бесплатных тиров
 

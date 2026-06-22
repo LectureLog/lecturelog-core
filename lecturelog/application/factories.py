@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from lecturelog.config.settings import S3Config
 from lecturelog.domain.media_source import MediaSource, is_video_source
-from lecturelog.domain.ports import MediaCutter, SlideProvider
+from lecturelog.domain.ports import MediaCutter, SlideProvider, Storage, WebhookNotifier
+from lecturelog.infrastructure.storage.s3_storage import S3Storage
+from lecturelog.infrastructure.webhook.http_notifier import HttpWebhookNotifier
 
 
 def cutter_factory(
@@ -28,3 +31,29 @@ def slide_provider_factory(
     if document_provider is not None:
         return document_provider
     return video_provider
+
+
+def storage_factory(s3: S3Config) -> Storage:
+    """Собрать S3-адаптер хранилища из конфига. presigned наружу включается,
+    только если задан public_endpoint (иначе адаптер вернёт None на presigned)."""
+    return S3Storage(
+        internal_endpoint=s3.internal_endpoint,
+        public_endpoint=s3.public_endpoint,
+        bucket=s3.bucket,
+        access_key=s3.access_key,
+        secret_key=s3.secret_key,
+        region=s3.region,
+        default_expiry=s3.presign_expiry,
+    )
+
+
+def webhook_notifier_factory(
+    callback_url: str | None, secret: str | None
+) -> WebhookNotifier | None:
+    """Нотификатор только при заданных callback_url и секрете; иначе None (автономный режим)."""
+    if not callback_url:
+        return None
+    if not secret:
+        # Секрет обязателен для подписи; без него вебхук не включаем (логируем выше по стеку).
+        return None
+    return HttpWebhookNotifier(callback_url=callback_url, secret=secret)

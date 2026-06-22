@@ -22,8 +22,10 @@ class ScriptedGemini:
     def __init__(self, responses):
         self._responses = list(responses)
         self.calls = 0
+        self.on_usage_seen = []
 
-    async def call(self, prompt, models, images=None):
+    async def call(self, prompt, models, images=None, on_usage=None):
+        self.on_usage_seen.append(on_usage)
         r = self._responses[self.calls]
         self.calls += 1
         return r
@@ -96,3 +98,24 @@ async def test_structurize_subsplit_fallback_on_bad_json(tmp_path, prompts_dir):
     assert len(topics) == 1
     assert len(topics[0].sections) == 1
     assert topics[0].sections[0].title == "Тема 1"
+
+
+@pytest.mark.asyncio
+async def test_structurize_forwards_on_usage_to_every_gemini_call(tmp_path, prompts_dir):
+    srt = tmp_path / "t.srt"
+    srt.write_text("1\n00:00:00,000 --> 00:05:00,000\nтекст\n", encoding="utf-8")
+    topics_json = json.dumps([{"title": "Тема 1", "start": "0:00", "end": "5:00"}])
+    sections_json = json.dumps([{"title": "Подтема 1", "start": "0:00", "end": "5:00"}])
+    gemini = ScriptedGemini([topics_json, sections_json, "контент"])
+
+    async def on_usage(payload):
+        return None
+
+    structurizer = _make_structurizer(gemini, prompts_dir)
+    await structurizer.structurize(
+        srt_path=srt, slide_images=[], output_dir=tmp_path / "out", on_usage=on_usage
+    )
+
+    # каждый вызов gemini получил наш non-None on_usage
+    assert gemini.on_usage_seen
+    assert all(cb is on_usage for cb in gemini.on_usage_seen)

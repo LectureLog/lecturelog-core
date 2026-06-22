@@ -7,20 +7,33 @@ from pathlib import Path
 
 from lecturelog.application.factories import cutter_factory
 from lecturelog.application.progress_plan import ProgressPlan
+from lecturelog.application.usage_accumulator import UsageAccumulator
 from lecturelog.domain.enums import PipelineStage, TaskStatus
-from lecturelog.domain.media_source import MediaSource, is_video_source
+from lecturelog.domain.media_source import (
+    AudioSource,
+    MediaSource,
+    S3ObjectSource,
+    VideoFileSource,
+    is_video_source,
+)
 from lecturelog.domain.models import Task
 from lecturelog.domain.ports import (
     Exporter,
     MediaCutter,
     MediaIngestor,
     SlideProvider,
+    Storage,
     Structurizer,
     TaskRepository,
     Transcriber,
+    WebhookNotifier,
 )
+from lecturelog.infrastructure.slides.video_provider import VideoSlideProvider
 
 logger = logging.getLogger(__name__)
+
+# Терминальные статусы: только на них шлём вебхук платформе.
+_TERMINAL = {TaskStatus.DONE, TaskStatus.FAILED, TaskStatus.INTERRUPTED}
 
 
 class PipelineService:
@@ -34,6 +47,8 @@ class PipelineService:
         progress_plan_factory: Callable[[], ProgressPlan],
         video_cutter: MediaCutter | None = None,
         ingestor: MediaIngestor | None = None,
+        webhook_notifier: WebhookNotifier | None = None,
+        storage: Storage | None = None,
     ):
         self._repo = repository
         self._transcriber = transcriber
@@ -43,6 +58,11 @@ class PipelineService:
         self._ingestor = ingestor
         self._exporter = exporter
         self._plan_factory = progress_plan_factory
+        # Опциональный нотификатор: None в автономном режиме (без PLATFORM_CALLBACK_URL).
+        self._webhook = webhook_notifier
+        # Хранилище лекций: исходник-внутрь (s3_object) и ZIP-наружу (results/).
+        # None оставлен для unit-тестов внутренних стадий (результат тогда — локальный путь).
+        self._storage = storage
 
     async def _set(
         self, task: Task, *, status=None, stage=None, progress=None, error=None, result_path=None
@@ -59,6 +79,22 @@ class PipelineService:
             task.result_path = result_path
         await self._repo.update(task)
 
+        # Пуш платформе только на терминальных статусах и только если нотификатор задан.
+        # Best-effort: ошибка/таймаут логируется и НЕ роняет/не задерживает пайплайн
+        # (защита от лежащей платформы; надёжность — на fallback-поллинге платформы).
+        if status in _TERMINAL and self._webhook is not None:
+            try:
+                await self._webhook.notify(task.task_id, status, error=task.error)
+            except Exception as exc:  # noqa: BLE001 — намеренно глушим любой сбой нотификации
+                logger.warning("Вебхук для task=%s не доставлен: %s", task.task_id, exc)
+
+    async def _persist_usage(self, task: Task, acc: UsageAccumulator) -> None:
+        """Гранулярность персиста = стадия: пересчитать total и сохранить usage.
+        НЕ звать на каждый LLM-колбэк (иначе DB-шторм)."""
+        acc.compute_total()
+        task.usage = acc.usage
+        await self._repo.update(task)
+
     async def run(
         self,
         task: Task,
@@ -67,8 +103,35 @@ class PipelineService:
         work_dir: Path,
         video_slide_provider_factory: Callable[[Path], SlideProvider] | None = None,
     ) -> Path:
+        # Граница S3-вход: если источник — ключ в MinIO, скачиваем его в локальный
+        # scratch и нормализуем в обычный локальный Audio/VideoFile-источник.
+        # Дальше пайплайн работает как с приложенным файлом (внутренние стадии не трогаем).
+        if isinstance(source, S3ObjectSource):
+            local_src = work_dir / "src" / Path(source.key).name
+            await self._storage.download_file(source.key, local_src)
+            if source.media == "video":
+                source = VideoFileSource(path=local_src)
+            else:
+                source = AudioSource(path=local_src)
+
         is_video = is_video_source(source)
         plan = ProgressPlan.for_video() if is_video else self._plan_factory()
+
+        # Накопитель расхода: source-ось известна сразу; slides_origin уточняется
+        # после того, как определится фактически отработавший провайдер слайдов.
+        acc = UsageAccumulator()
+        acc.set_mode(source="video" if is_video else "audio", slides_origin="none")
+
+        # Нейтральное зерно от провайдеров; стадию навешивают эти closure'ы.
+        async def transcribe_usage(payload: dict):
+            acc.record_transcribe(payload)
+
+        async def structurize_usage(payload: dict):
+            acc.record_llm("structurize", payload)
+
+        async def video_slides_usage(payload: dict):
+            acc.record_llm("video_slides", payload)
+
         try:
             # Видео: источник аудио для транскрибации — извлечённая дорожка,
             # источник для нарезки — скачанное/локальное видео. Для аудио оба = source.path.
@@ -126,16 +189,32 @@ class PipelineService:
                 audio_path=audio_for_transcribe,
                 output_dir=work_dir / "transcribe",
                 on_progress=transcribe_progress,
+                on_usage=transcribe_usage,
             )
+            # Инкрементальный персист: transcribe доезжает ДО появления structurize.
+            await self._persist_usage(task, acc)
 
             slide_images: list[Path] = []
             if slide_provider is not None:
+                # Ось slides_origin: video_extracted только для VideoSlideProvider,
+                # иначе document. Завязка на конкретный тип держится в одном месте.
+                is_video_extracted = isinstance(slide_provider, VideoSlideProvider)
+                acc.set_mode(
+                    source="video" if is_video else "audio",
+                    slides_origin="video_extracted" if is_video_extracted else "document",
+                )
                 await self._set(
                     task,
                     stage=PipelineStage.SLIDES,
                     progress=plan.stage_start(PipelineStage.SLIDES),
                 )
-                slide_images = await slide_provider.get_slides(output_dir=work_dir / "slides")
+                slide_images = await slide_provider.get_slides(
+                    output_dir=work_dir / "slides",
+                    on_usage=video_slides_usage if is_video_extracted else None,
+                )
+                # Стадия video_slides существует ⟺ video_extracted.
+                if is_video_extracted:
+                    await self._persist_usage(task, acc)
 
             await self._set(
                 task,
@@ -155,7 +234,9 @@ class PipelineService:
                 slide_images=slide_images,
                 output_dir=work_dir / "structurize",
                 on_progress=structurize_progress,
+                on_usage=structurize_usage,
             )
+            await self._persist_usage(task, acc)
 
             sections = [s for t in topics for s in t.sections]
             cutter = cutter_factory(
@@ -179,17 +260,31 @@ class PipelineService:
                 media_kind="video" if is_video else "audio",
             )
 
+            # Граница S3-выход: ZIP-результат уезжает в results/<task_id>/result.zip,
+            # result_path хранит S3-ключ. Без storage (unit-тесты внутренних стадий)
+            # result_path остаётся локальным путём.
+            if self._storage is not None:
+                results_key = f"results/{task.task_id}/result.zip"
+                await self._storage.upload_file(zip_path, results_key)
+                result_path = results_key
+            else:
+                result_path = str(zip_path)
+
             await self._set(
                 task,
                 status=TaskStatus.DONE,
                 stage=PipelineStage.EXPORT,
                 progress=100,
-                result_path=str(zip_path),
+                result_path=result_path,
                 error=None,
             )
             return zip_path
         except Exception as exc:
             logger.warning("Пайплайн упал для task=%s: %s", task.task_id, exc)
+            # Best-effort: пересчитать total и сохранить частичный расход,
+            # чтобы он доехал на FAILED/INTERRUPTED.
+            acc.compute_total()
+            task.usage = acc.usage
             await self._set(
                 task, status=TaskStatus.FAILED, error=f"{exc}\n{traceback.format_exc()}"
             )

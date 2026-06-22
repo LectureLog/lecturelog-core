@@ -67,14 +67,30 @@ class DatabaseConfig(BaseSettings):
     url: str = Field(alias="DATABASE_URL")
 
 
-class StorageConfig(BaseSettings):
+class S3Config(BaseSettings):
+    # Два endpoint'а на один MinIO: internal — движок внутри docker-сети;
+    # public (опц.) — хост для presigned в браузер. Без public presigned наружу не выдаётся.
     model_config = _BASE
-    upload_dir: str = Field("/app/data", alias="UPLOAD_DIR")
+    internal_endpoint: str = Field(alias="S3_INTERNAL_ENDPOINT")
+    public_endpoint: str | None = Field(None, alias="S3_PUBLIC_ENDPOINT")
+    bucket: str = Field(alias="S3_BUCKET")
+    access_key: str = Field(alias="S3_ACCESS_KEY")
+    secret_key: str = Field(alias="S3_SECRET_KEY")
+    region: str = Field("us-east-1", alias="S3_REGION")
+    presign_expiry: int = Field(3600, alias="S3_PRESIGN_EXPIRY")
 
 
 class WorkerConfig(BaseSettings):
     model_config = _BASE
     max_concurrent_tasks: int = Field(2, alias="MAX_CONCURRENT_TASKS")
+
+
+class WebhookConfig(BaseSettings):
+    # Оба поля опциональны: режим вебхука включается только при заданном callback_url.
+    # Без URL движок работает автономно (поллинг-эндпоинты), поведение не меняется.
+    model_config = _BASE
+    callback_url: str | None = Field(None, alias="PLATFORM_CALLBACK_URL")
+    secret: str | None = Field(None, alias="LECTURELOG_WEBHOOK_SECRET")
 
 
 class AppConfig(BaseSettings):
@@ -85,7 +101,7 @@ class AppConfig(BaseSettings):
     def model_post_init(self, __context: object) -> None:
         # Форсируем создание под-конфигов сразу, чтобы required-поля
         # (GROQ_API_KEYS и т.д.) валидировались в момент построения AppConfig.
-        _ = (self.groq, self.gemini, self.database, self.storage, self.worker)
+        _ = (self.groq, self.gemini, self.database, self.s3, self.worker, self.webhook)
 
     @computed_field  # type: ignore[prop-decorator]
     @cached_property
@@ -104,13 +120,18 @@ class AppConfig(BaseSettings):
 
     @computed_field  # type: ignore[prop-decorator]
     @cached_property
-    def storage(self) -> StorageConfig:
-        return StorageConfig()
+    def s3(self) -> S3Config:
+        return S3Config()
 
     @computed_field  # type: ignore[prop-decorator]
     @cached_property
     def worker(self) -> WorkerConfig:
         return WorkerConfig()
+
+    @computed_field  # type: ignore[prop-decorator]
+    @cached_property
+    def webhook(self) -> WebhookConfig:
+        return WebhookConfig()
 
 
 @lru_cache

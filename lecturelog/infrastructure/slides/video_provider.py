@@ -7,7 +7,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from lecturelog.domain.ports import ProgressCallback, SlideProvider
+from lecturelog.domain.ports import ProgressCallback, SlideProvider, UsageCallback
 from lecturelog.infrastructure.llm.gemini_client import GeminiClient
 from lecturelog.infrastructure.slides.video_slide_utils import (
     merge_and_dedup,
@@ -176,7 +176,12 @@ class VideoSlideProvider(SlideProvider):
             await asyncio.sleep(5)
         raise RuntimeError("Файл не стал ACTIVE за 5 минут")
 
-    async def _call_gemini_video(self, prompt: str, video_path: Path) -> str:
+    async def _call_gemini_video(
+        self,
+        prompt: str,
+        video_path: Path,
+        on_usage: UsageCallback | None = None,
+    ) -> str:
         """Извлечь слайды одного чанка: выбор пары (ключ×модель) делает пул,
         загрузка файла мемоизируется на выбранный ключ (файл привязан к проекту
         ключа, смена ключа = повторная загрузка)."""
@@ -198,11 +203,14 @@ class VideoSlideProvider(SlideProvider):
             ]
 
         return await self._gemini.generate(
-            self._models, prepare, response_json=True, label="video_slides"
+            self._models, prepare, response_json=True, label="video_slides", on_usage=on_usage
         )
 
     async def get_slides(
-        self, output_dir: Path, on_progress: ProgressCallback | None = None
+        self,
+        output_dir: Path,
+        on_progress: ProgressCallback | None = None,
+        on_usage: UsageCallback | None = None,
     ) -> list[Path]:
         """Извлекает PNG-слайды из видео через Gemini Vision.
 
@@ -235,7 +243,7 @@ class VideoSlideProvider(SlideProvider):
                         self._build_chunk_prompt(base_prompt, start, end) if multi else base_prompt
                     )
                     try:
-                        raw = await self._call_gemini_video(prompt, chunk_path)
+                        raw = await self._call_gemini_video(prompt, chunk_path, on_usage=on_usage)
                         data = parse_json_response(raw)
                         return start, end, list(data.get("slides", []))
                     except Exception as exc:

@@ -1,14 +1,34 @@
 import pytest
 
+from lecturelog.domain.enums import TaskStatus
 from lecturelog.domain.ports import (
     Exporter,
     MediaCutter,
     MediaIngestor,
     SlideProvider,
+    Storage,
     Structurizer,
     TaskRepository,
     Transcriber,
+    UsageCallback,
+    WebhookNotifier,
 )
+
+
+def test_usage_callback_is_importable():
+    # UsageCallback должен существовать рядом с ProgressCallback (транспорт on_usage)
+    assert UsageCallback is not None
+
+
+def test_transcriber_impl_without_on_usage_still_instantiates():
+    # обратная совместимость: реализация без on_usage всё ещё валидна
+    from pathlib import Path
+
+    class Legacy(Transcriber):
+        async def transcribe(self, audio_path, output_dir, on_progress=None):
+            return Path("x.srt")
+
+    assert isinstance(Legacy(), Transcriber)
 
 
 @pytest.mark.parametrize(
@@ -44,3 +64,59 @@ def test_complete_implementation_instantiates():
             return Path("x.srt")
 
     assert isinstance(Good(), Transcriber)
+
+
+def test_storage_is_abstract():
+    # Порт хранилища нельзя инстанцировать напрямую.
+    with pytest.raises(TypeError):
+        Storage()
+
+
+def test_storage_incomplete_impl_cannot_instantiate():
+    # Реализация без всех 4 методов остаётся абстрактной.
+    class Bad(Storage):
+        async def upload_file(self, local_path, key):
+            pass
+
+    with pytest.raises(TypeError):
+        Bad()
+
+
+def test_storage_complete_impl_instantiates():
+    class Good(Storage):
+        async def upload_file(self, local_path, key):
+            pass
+
+        async def download_file(self, key, local_path):
+            pass
+
+        async def presigned_put(self, key, expires_in=None):
+            return None
+
+        async def presigned_get(
+            self, key, expires_in=None, download_filename=None, content_type=None
+        ):
+            return None
+
+    assert isinstance(Good(), Storage)
+
+
+def test_webhook_notifier_is_abstract():
+    # Абстрактный порт нельзя инстанцировать напрямую.
+    with pytest.raises(TypeError):
+        WebhookNotifier()
+
+
+@pytest.mark.asyncio
+async def test_webhook_notifier_subclass_instantiates_and_notifies():
+    # Сабкласс с реализованным notify инстанцируется; сигнатура с default error=None.
+    calls = []
+
+    class Impl(WebhookNotifier):
+        async def notify(self, task_id, status, error=None):
+            calls.append((task_id, status, error))
+
+    impl = Impl()
+    assert isinstance(impl, WebhookNotifier)
+    await impl.notify("t1", TaskStatus.DONE)
+    assert calls == [("t1", TaskStatus.DONE, None)]

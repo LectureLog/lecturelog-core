@@ -37,6 +37,7 @@ class PostgresTaskRepository(TaskRepository):
                     "progress_pct",
                     "error",
                     "result_path",
+                    "usage",
                     "created_at",
                     "updated_at",
                 ):

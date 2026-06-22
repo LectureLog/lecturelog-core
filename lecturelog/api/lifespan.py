@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import logging
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
 
+from lecturelog.application.factories import storage_factory, webhook_notifier_factory
 from lecturelog.application.pipeline_service import PipelineService
 from lecturelog.application.progress_plan import ProgressPlan
 from lecturelog.application.worker import PipelineWorker
@@ -53,6 +55,23 @@ async def lifespan(app: FastAPI):
         concurrency_render=cfg.gemini.concurrency_render,
         prompts_dir=Path("prompts"),
     )
+    # Опциональный вебхук: включается только при заданных URL и секрете.
+    notifier = webhook_notifier_factory(cfg.webhook.callback_url, cfg.webhook.secret)
+    if cfg.webhook.callback_url and not cfg.webhook.secret:
+        logger.warning(
+            "PLATFORM_CALLBACK_URL задан, но LECTURELOG_WEBHOOK_SECRET нет — вебхук выключен"
+        )
+    if notifier is not None:
+        # Логируем сам факт включения, без секрета.
+        logger.info("Вебхук включён, callback_url=%s", cfg.webhook.callback_url)
+
+    # Хранилище лекций (S3/MinIO). presigned наружу доступен только при public endpoint.
+    storage = storage_factory(cfg.s3)
+    if cfg.s3.public_endpoint:
+        logger.info("S3 presigned включён (public endpoint задан)")
+    else:
+        logger.info("S3 presigned выключен: /uploads и /result-url отдадут 409, работает стрим")
+
     service = PipelineService(
         repository=repo,
         transcriber=transcriber,
@@ -62,6 +81,8 @@ async def lifespan(app: FastAPI):
         ingestor=VideoIngestor(),
         exporter=ObsidianExporter(),
         progress_plan_factory=ProgressPlan.for_audio,
+        webhook_notifier=notifier,
+        storage=storage,
     )
     worker = PipelineWorker(service=service, concurrency=cfg.worker.max_concurrent_tasks)
     await worker.start()
@@ -69,7 +90,10 @@ async def lifespan(app: FastAPI):
     app.state.config = cfg
     app.state.repository = repo
     app.state.worker = worker
-    app.state.upload_dir = Path(cfg.storage.upload_dir)
+    app.state.storage = storage
+    app.state.presign_expiry = cfg.s3.presign_expiry
+    # Локальный эфемерный scratch для внутренних стадий пайплайна (не S3).
+    app.state.work_dir = Path(os.getenv("WORK_DIR", "/app/data"))
     # Для отложенного создания VideoSlideProvider в роуте (video_path появляется
     # только после ingest, поэтому провайдер строится per-task, а не как синглтон).
     app.state.gemini = gemini
