@@ -86,9 +86,7 @@ class FakeExporter:
             t = media_dir / f"{i + 1:02d}-s.mp3"
             t.write_bytes(b"m")
             media_targets.append(t)
-        return ExportResult(
-            output_root=output_root, media_targets=media_targets, slide_targets=[]
-        )
+        return ExportResult(output_root=output_root, media_targets=media_targets, slide_targets=[])
 
 
 class FailingTranscriber:

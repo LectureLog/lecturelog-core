@@ -9,9 +9,6 @@ from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
 from starlette.background import BackgroundTask
 
-from lecturelog.domain.exceptions import ResultNotReady
-from lecturelog.infrastructure.export.zip_utils import zip_dir
-
 from lecturelog.api.dependencies import (
     get_gemini,
     get_presign_expiry,
@@ -38,13 +35,14 @@ from lecturelog.application.use_cases.get_result import GetResultUseCase
 from lecturelog.application.use_cases.get_status import GetStatusUseCase
 from lecturelog.application.use_cases.get_transcript import GetTranscriptUseCase
 from lecturelog.application.worker import PipelineJob
-from lecturelog.domain.exceptions import TranscribeFailed
+from lecturelog.domain.exceptions import ResultNotReady, TranscribeFailed
 from lecturelog.domain.media_source import (
     AudioSource,
     S3ObjectSource,
     VideoFileSource,
     VideoUrlSource,
 )
+from lecturelog.infrastructure.export.zip_utils import zip_dir
 from lecturelog.infrastructure.media.url_utils import is_url
 from lecturelog.infrastructure.slides.document_provider import DocumentSlideProvider
 from lecturelog.infrastructure.slides.video_provider import VideoSlideProvider

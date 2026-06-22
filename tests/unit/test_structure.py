@@ -142,9 +142,7 @@ def test_build_structure_slide_index_out_of_range_skipped(tmp_path):
             start="0",
             end="1",
             sections=[
-                Section(
-                    title="С", start="0", end="1", content="c", slide_indices=[1, 99]
-                ),
+                Section(title="С", start="0", end="1", content="c", slide_indices=[1, 99]),
             ],
         ),
     ]
