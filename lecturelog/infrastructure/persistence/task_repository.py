@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from sqlalchemy import delete as sa_delete
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
@@ -53,3 +54,9 @@ class PostgresTaskRepository(TaskRepository):
             )
             await session.commit()
             return result.rowcount or 0
+
+    async def delete(self, task_id: str) -> None:
+        # Идемпотентно: DELETE ... WHERE по отсутствующей строке — 0 строк, не ошибка.
+        async with self._session_factory() as session:
+            await session.execute(sa_delete(TaskRow).where(TaskRow.task_id == task_id))
+            await session.commit()

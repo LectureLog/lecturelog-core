@@ -92,6 +92,10 @@ class TaskRepository(ABC):
     async def mark_stale_as_interrupted(self) -> int:
         """Пометить все PROCESSING-задачи как INTERRUPTED (при старте). Вернуть кол-во."""
 
+    @abstractmethod
+    async def delete(self, task_id: str) -> None:
+        """Удалить строку задачи. Идемпотентно: отсутствие строки — не ошибка."""
+
 
 class Storage(ABC):
     """Порт хранилища лекций. domain/application не знают про boto/minio —
@@ -120,6 +124,11 @@ class Storage(ABC):
     ) -> str | None:
         """Presigned GET URL. Если публичный endpoint не задан — None
         (наружу presigned не выдаётся, работает только стрим)."""
+
+    @abstractmethod
+    async def delete_prefix(self, prefix: str) -> None:
+        """Удалить все объекты бакета с данным ключевым префиксом.
+        Идемпотентно: отсутствие объектов под префиксом — не ошибка (no-op)."""
 
 
 class WebhookNotifier(ABC):

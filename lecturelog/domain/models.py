@@ -30,6 +30,10 @@ class Topic(BaseModel):
 class Task(BaseModel):
     task_id: str
     source_kind: str
+    # Ключ исходника в MinIO (uploads/<uuid>/<file>) для s3_object-источника.
+    # Сохраняется при создании задачи, чтобы DELETE мог удалить исходник.
+    # Для остальных kind (audio/video/video_url) — None.
+    source_key: str | None = None
     status: TaskStatus = TaskStatus.PENDING
     stage: PipelineStage | None = None
     progress_pct: int = 0

@@ -43,3 +43,8 @@ class FakeStorage(Storage):
         if download_filename is not None:
             url += f"&filename={download_filename}.zip"
         return url
+
+    async def delete_prefix(self, prefix: str) -> None:
+        # Идемпотентно: удаляем все ключи с данным префиксом; пустой результат — no-op.
+        for key in [k for k in self.objects if k.startswith(prefix)]:
+            del self.objects[key]

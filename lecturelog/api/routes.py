@@ -29,6 +29,7 @@ from lecturelog.api.schemas import (
     UploadUrlResponse,
 )
 from lecturelog.application.use_cases.create_task import CreateTaskUseCase
+from lecturelog.application.use_cases.delete_task import DeleteTaskUseCase
 from lecturelog.application.use_cases.get_result import GetResultUseCase
 from lecturelog.application.use_cases.get_status import GetStatusUseCase
 from lecturelog.application.use_cases.get_transcript import GetTranscriptUseCase
@@ -199,7 +200,14 @@ async def create_task(
         kind_source = AudioSource(path=Path("placeholder.bin"))
 
     use_case = CreateTaskUseCase(repository=repository, enqueue=enqueue)
-    task_id = await use_case.execute(source=kind_source, slides_path=None)
+    # source_key сохраняем только для s3-источника (uploads/...), чтобы DELETE
+    # позже мог удалить исходник; для остальных источников исходного объекта в
+    # MinIO нет.
+    task_id = await use_case.execute(
+        source=kind_source,
+        slides_path=None,
+        source_key=s3_key if s3_key is not None else None,
+    )
     return CreateTaskResponse(task_id=task_id)
 
 
@@ -251,6 +259,28 @@ async def get_task_status(task_id: str, repository=Depends(get_repository)):
     # Побочно: путь чтения статуса не валидирует usage через Usage и не падает 500
     # при неожиданной форме usage (NON-BLOCKING 4).
     return JSONResponse(content=TaskStatusResponse.wire_body(task))
+
+
+@router.delete(
+    "/tasks/{task_id}",
+    status_code=204,
+    summary="Идемпотентно удалить задачу и её объекты MinIO",
+    description=(
+        "Удаляет объекты ядра в MinIO (results/<task_id>/ и связанный uploads/<...>) "
+        "и строку задачи. Идемпотентно: повтор на уже удалённую/неизвестную задачу -> 204."
+    ),
+    tags=["tasks"],
+)
+async def delete_task(
+    task_id: str,
+    repository=Depends(get_repository),
+    storage=Depends(get_storage),
+):
+    # За HMAC-контуром платформа<->ядро (внутренний контракт, как POST /tasks).
+    # Платформа ретраит при обрыве -> use-case идемпотентен, всегда 204.
+    use_case = DeleteTaskUseCase(repository=repository, storage=storage)
+    await use_case.execute(task_id)
+    return Response(status_code=204)
 
 
 @router.get(

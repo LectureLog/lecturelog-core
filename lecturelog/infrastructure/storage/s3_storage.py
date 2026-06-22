@@ -117,3 +117,21 @@ class S3Storage(Storage):
                 ExpiresIn=expires_in or self._default_expiry,
             )
         return self._swap_host(url)
+
+    async def delete_prefix(self, prefix: str) -> None:
+        # Идемпотентная чистка: листаем все объекты под префиксом (с пагинацией)
+        # и батч-удаляем. Пустой префикс -> delete_objects не вызываем (no-op).
+        # В aiobotocore get_paginator синхронный (не awaitable), paginate() даёт
+        # async-итератор по страницам.
+        async with self._client_factory() as client:
+            paginator = client.get_paginator("list_objects_v2")
+            keys: list[dict[str, str]] = []
+            async for page in paginator.paginate(Bucket=self._bucket, Prefix=prefix):
+                for obj in page.get("Contents", []):
+                    keys.append({"Key": obj["Key"]})
+                    # S3 delete_objects ограничен 1000 ключами на запрос.
+                    if len(keys) == 1000:
+                        await client.delete_objects(Bucket=self._bucket, Delete={"Objects": keys})
+                        keys = []
+            if keys:
+                await client.delete_objects(Bucket=self._bucket, Delete={"Objects": keys})
