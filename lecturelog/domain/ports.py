@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 from lecturelog.domain.enums import TaskStatus
@@ -65,6 +66,18 @@ class MediaIngestor(ABC):
         """Извлечь аудиодорожку из видео."""
 
 
+@dataclass(frozen=True)
+class ExportResult:
+    """Итог раскладки exporter: корень output/ и фактические пути медиа/слайдов.
+
+    Единый источник истины путей для заливки объектов и build_structure
+    (ключи MinIO считаются из этих путей одной формулой)."""
+
+    output_root: Path
+    media_targets: list[Path]
+    slide_targets: list[Path]
+
+
 class Exporter(ABC):
     @abstractmethod
     async def export(
@@ -74,8 +87,11 @@ class Exporter(ABC):
         slide_images: list[Path],
         output_dir: Path,
         media_kind: str,
-    ) -> Path:
-        """Собрать конспект.md + медиа + слайды в ZIP, вернуть путь к ZIP."""
+    ) -> ExportResult:
+        """Разложить конспект.md + медиа + слайды в output_dir/output/.
+
+        НЕ зипует (zip собирается на лету при скачивании). Возвращает ExportResult
+        с корнем output/ и фактическими путями медиа/слайдов."""
 
 
 class TaskRepository(ABC):
