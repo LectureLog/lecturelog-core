@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import traceback
 from collections.abc import Callable
@@ -29,6 +30,8 @@ from lecturelog.domain.ports import (
     Transcriber,
     WebhookNotifier,
 )
+from lecturelog.infrastructure.export.structure import build_structure, result_key
+from lecturelog.infrastructure.export.zip_utils import zip_dir
 from lecturelog.infrastructure.slides.video_provider import VideoSlideProvider
 
 logger = logging.getLogger(__name__)
@@ -61,8 +64,8 @@ class PipelineService:
         self._plan_factory = progress_plan_factory
         # Опциональный нотификатор: None в автономном режиме (без PLATFORM_CALLBACK_URL).
         self._webhook = webhook_notifier
-        # Хранилище лекций: исходник-внутрь (s3_object) и ZIP-наружу (results/).
-        # None оставлен для unit-тестов внутренних стадий (результат тогда — локальный путь).
+        # Хранилище лекций: исходник-внутрь (s3_object) и результат-наружу папкой
+        # объектов под results/<task_id>/. None — автономия (результат: локальный zip).
         self._storage = storage
 
     async def _set(
@@ -119,7 +122,7 @@ class PipelineService:
         slide_provider: SlideProvider | None,
         work_dir: Path,
         video_slide_provider_factory: Callable[[Path], SlideProvider] | None = None,
-    ) -> Path:
+    ) -> str:
         # Граница S3-вход: если источник — ключ в MinIO, скачиваем его в локальный
         # scratch и нормализуем в обычный локальный Audio/VideoFile-источник.
         # Дальше пайплайн работает как с приложенным файлом (внутренние стадии не трогаем).
@@ -269,23 +272,49 @@ class PipelineService:
             await self._set(
                 task, stage=PipelineStage.EXPORT, progress=plan.stage_start(PipelineStage.EXPORT)
             )
-            zip_path = await self._exporter.export(
+            media_kind = "video" if is_video else "audio"
+            export_result = await self._exporter.export(
                 topics=topics,
                 media_fragments=fragments,
                 slide_images=slide_images,
                 output_dir=work_dir / "export",
-                media_kind="video" if is_video else "audio",
+                media_kind=media_kind,
+            )
+            output_root = export_result.output_root
+
+            # structure.json — нейтральное дерево с РЕАЛЬНЫМИ ключами MinIO.
+            # Кладём в output_root, чтобы он попал и в пофайловую заливку, и в
+            # автономный локальный zip.
+            structure = build_structure(
+                topics=topics,
+                media_targets=export_result.media_targets,
+                slide_targets=export_result.slide_targets,
+                output_root=output_root,
+                task_id=task.task_id,
+                media_kind=media_kind,
+            )
+            (output_root / "structure.json").write_text(
+                json.dumps(structure, ensure_ascii=False, indent=2), encoding="utf-8"
             )
 
-            # Граница S3-выход: ZIP-результат уезжает в results/<task_id>/result.zip,
-            # result_path хранит S3-ключ. Без storage (unit-тесты внутренних стадий)
-            # result_path остаётся локальным путём.
+            # Граница S3-выход: результат — ПАПКА отдельных объектов под префиксом
+            # results/<task_id>/, zip не хранится (собирается на лету при скачивании).
+            # result_path хранит сам префикс. Без storage (автономия/unit-тесты) —
+            # локальный zip из output/, result_path — путь к нему.
             if self._storage is not None:
-                results_key = f"results/{task.task_id}/result.zip"
-                await self._storage.upload_file(zip_path, results_key)
-                result_path = results_key
+                prefix = f"results/{task.task_id}/"
+                # ЕДИНАЯ формула ключа (result_key) с build_structure -> ключи в
+                # structure.json совпадают с реально залитыми объектами.
+                for path in sorted(output_root.rglob("*")):
+                    if path.is_file():
+                        await self._storage.upload_file(
+                            path, result_key(path, output_root, task.task_id)
+                        )
+                result_path = prefix
             else:
-                result_path = str(zip_path)
+                local_zip = work_dir / "export" / "result.zip"
+                zip_dir(output_root, local_zip, base=output_root.parent)
+                result_path = str(local_zip)
 
             await self._set(
                 task,
@@ -295,7 +324,7 @@ class PipelineService:
                 result_path=result_path,
                 error=None,
             )
-            return zip_path
+            return result_path
         except Exception as exc:
             logger.warning("Пайплайн упал для task=%s: %s", task.task_id, exc)
             # Best-effort: пересчитать total и сохранить частичный расход,
