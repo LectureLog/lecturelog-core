@@ -725,7 +725,7 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Стрим готового ZIP-результата из хранилища",
+        "summary": "Собрать и отдать ZIP-результат на лету",
         "tags": [
           "tasks"
         ]
