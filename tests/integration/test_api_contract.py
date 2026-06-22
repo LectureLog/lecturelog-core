@@ -357,6 +357,35 @@ def test_result_cleans_up_tmp_dir(client, repo, tmp_path):
     assert [p for p in leftover if p.is_file()] == []
 
 
+def test_result_cleans_up_tmp_dir_on_assembly_error(client, repo, tmp_path):
+    # Disk leak на пути ошибки: если download_file падает в середине сборки zip
+    # (уже создан tmp-каталог с частью объектов), временный каталог не должен
+    # оставаться на диске — на ошибке чистим сразу, не дожидаясь BackgroundTask.
+    storage = client._storage
+    _put_result_objects(storage)
+    repo.tasks["t"] = _done_task()
+
+    original_download = storage.download_file
+    calls = {"n": 0}
+
+    async def failing_download(key, local_path):
+        # Первый объект скачиваем (tmp-каталог наполняется), на втором — падаем.
+        calls["n"] += 1
+        if calls["n"] >= 2:
+            raise RuntimeError("download boom")
+        await original_download(key, local_path)
+
+    storage.download_file = failing_download
+
+    # Поведение ошибки для клиента не меняем: исключение пробрасывается.
+    with pytest.raises(RuntimeError, match="download boom"):
+        client.get("/api/v1/tasks/t/result")
+
+    results_tmp = tmp_path / "results_tmp"
+    leftover = list(results_tmp.rglob("*")) if results_tmp.exists() else []
+    assert [p for p in leftover if p.is_file()] == []
+
+
 def test_result_not_ready_no_objects_404(client, repo):
     # result_path есть, но объектов под префиксом нет -> 404.
     repo.tasks["t"] = _done_task()

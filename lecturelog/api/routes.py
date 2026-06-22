@@ -404,8 +404,16 @@ async def get_task_result(
     prefix = await use_case.execute(task_id)
     # Уникальный каталог на запрос: параллельные обращения к одному task_id не мешают друг другу.
     tmp_dir = work_dir / "results_tmp" / task_id / uuid4().hex
-    zip_path = await _assemble_result_zip(storage, prefix, tmp_dir)
-    # Удаляем весь tmp-каталог после отдачи (иначе disk leak на каждый запрос).
+    try:
+        zip_path = await _assemble_result_zip(storage, prefix, tmp_dir)
+    except Exception:
+        # На пути ошибки (download_file упал в середине сборки и т.п.) FileResponse
+        # с BackgroundTask не создаётся — чистим tmp-каталог сразу, иначе disk leak.
+        # Поведение ошибки для клиента не меняем: пробрасываем исключение дальше.
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        raise
+    # На успехе каталог должен дожить до стрима — удаляем его через BackgroundTask
+    # ПОСЛЕ отдачи файла (иначе disk leak на каждый запрос).
     return FileResponse(
         path=zip_path,
         filename="result.zip",
