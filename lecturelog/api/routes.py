@@ -22,6 +22,9 @@ from lecturelog.api.schemas import (
     ErrorResponse,
     ResultUrlResponse,
     TaskStatusResponse,
+    TranscriptFailedError,
+    TranscriptInvalidFormatError,
+    TranscriptNotFoundError,
     UploadUrlRequest,
     UploadUrlResponse,
 )
@@ -260,9 +263,17 @@ async def get_task_status(task_id: str, repository=Depends(get_repository)):
             "description": "Готовый транскрипт файлом",
         },
         202: {"description": "Транскрипт ещё не готов, повторить позже"},
-        400: {"model": ErrorResponse, "description": "Недопустимый format"},
-        404: {"model": ErrorResponse, "description": "Задача не найдена"},
-        409: {"model": ErrorResponse, "description": "Транскрибация завершилась ошибкой"},
+        # Этот роут отдаёт ошибки в форме {"error": ...}, а не {"detail": ...},
+        # поэтому документируем фактические модели, а не общий ErrorResponse.
+        400: {
+            "model": TranscriptInvalidFormatError,
+            "description": "Недопустимый format",
+        },
+        404: {"model": TranscriptNotFoundError, "description": "Задача не найдена"},
+        409: {
+            "model": TranscriptFailedError,
+            "description": "Транскрибация завершилась ошибкой",
+        },
     },
 )
 async def get_task_transcript(

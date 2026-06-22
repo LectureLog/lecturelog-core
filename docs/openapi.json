@@ -323,6 +323,64 @@
         "title": "TranscribeUsage",
         "type": "object"
       },
+      "TranscriptFailedError": {
+        "properties": {
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
+          "error": {
+            "title": "Error",
+            "type": "string"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "title": "TranscriptFailedError",
+        "type": "object"
+      },
+      "TranscriptInvalidFormatError": {
+        "properties": {
+          "allowed": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Allowed",
+            "type": "array"
+          },
+          "error": {
+            "title": "Error",
+            "type": "string"
+          }
+        },
+        "required": [
+          "error",
+          "allowed"
+        ],
+        "title": "TranscriptInvalidFormatError",
+        "type": "object"
+      },
+      "TranscriptNotFoundError": {
+        "properties": {
+          "error": {
+            "title": "Error",
+            "type": "string"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "title": "TranscriptNotFoundError",
+        "type": "object"
+      },
       "UploadUrlRequest": {
         "properties": {
           "filename": {
@@ -741,7 +799,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
+                  "$ref": "#/components/schemas/TranscriptInvalidFormatError"
                 }
               }
             },
@@ -751,7 +809,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
+                  "$ref": "#/components/schemas/TranscriptNotFoundError"
                 }
               }
             },
@@ -761,7 +819,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
+                  "$ref": "#/components/schemas/TranscriptFailedError"
                 }
               }
             },

@@ -72,6 +72,26 @@ class ErrorResponse(BaseModel):
     detail: str
 
 
+# Фактические формы ошибок роута GET /tasks/{id}/transcript отличаются от
+# ErrorResponse: они несут машинный код "error" вместо "detail". Документируем
+# их точно (OpenAPI — источник правды для генерации клиента), НЕ меняя поведение.
+class TranscriptInvalidFormatError(BaseModel):
+    # 400: {"error": "invalid_format", "allowed": ["srt", "txt"]}.
+    error: str
+    allowed: list[str]
+
+
+class TranscriptNotFoundError(BaseModel):
+    # 404: {"error": "task_not_found"}.
+    error: str
+
+
+class TranscriptFailedError(BaseModel):
+    # 409: {"error": "transcribe_failed", "detail": <task.error>}.
+    error: str
+    detail: str | None = None
+
+
 class TaskStatusResponse(BaseModel):
     task_id: str
     stage: str | None
