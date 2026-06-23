@@ -187,9 +187,7 @@ def cmd_delete(args: argparse.Namespace) -> None:
     Эндпоинт идемпотентен — повтор на уже удалённую/неизвестную задачу тоже
     отдаёт 204, поэтому отдельной ветки «не найдено» здесь нет.
     """
-    req = urllib.request.Request(
-        f"{args.base}/tasks/{args.task_id}", method="DELETE"
-    )
+    req = urllib.request.Request(f"{args.base}/tasks/{args.task_id}", method="DELETE")
     with _request(req):
         pass
     print(f"deleted -> {args.task_id}")
