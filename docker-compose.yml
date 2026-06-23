@@ -14,7 +14,7 @@ services:
       retries: 10
 
   minio:
-    image: minio/minio:latest
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: minioadmin
@@ -33,11 +33,11 @@ services:
     #   - "9001:9001"
 
   # Создание бакета lectures и применение правил жизненного цикла (ILM) при старте.
-  # Скрипт идемпотентен (mc mb --ignore-existing + mc ilm import целиком
+  # Скрипт идемпотентен (mc mb --ignore-existing + mc ilm rule import целиком
   # перезаписывает набор правил). После инита контейнер завершается — это инит-шаг,
   # а не постоянный сервис.
   minio-init:
-    image: minio/mc:latest
+    image: minio/mc:RELEASE.2025-08-13T08-35-41Z
     depends_on:
       minio:
         condition: service_healthy

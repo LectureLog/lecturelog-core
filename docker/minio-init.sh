@@ -10,7 +10,7 @@ mc alias set local http://minio:9000 minioadmin minioadmin
 # Бакет создаём идемпотентно.
 mc mb --ignore-existing local/lectures
 
-# Применяем lifecycle через import: JSON ЦЕЛИКОМ перезаписывает набор правил
+# Применяем lifecycle через rule import: JSON ЦЕЛИКОМ перезаписывает набор правил
 # бакета → повторный запуск не дублирует и не падает (идемпотентно).
 #   expire-uploads      uploads/      Expiration 7д   — сырые исходники живут недолго.
 #   abort-mpu-uploads   uploads/      AbortMPU 1д     — чистка orphan-parts от
@@ -18,7 +18,7 @@ mc mb --ignore-existing local/lectures
 #   expire-results-tmp  results-tmp/  Expiration 1д   — временные zip от /result-url.
 # ВАЖНО: results/ (постоянные лекции, ∞ до DELETE) БЕЗ правил. Префикс results-tmp/
 # строго со слешом — НЕ задевает results/ (8-я позиция '-' против '/'), критичный инвариант.
-mc ilm import local/lectures <<'JSON'
+mc ilm rule import local/lectures <<'JSON'
 {
   "Rules": [
     {
