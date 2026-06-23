@@ -13,11 +13,13 @@ mc mb --ignore-existing local/lectures
 # Применяем lifecycle через rule import: JSON ЦЕЛИКОМ перезаписывает набор правил
 # бакета → повторный запуск не дублирует и не падает (идемпотентно).
 #   expire-uploads      uploads/      Expiration 7д   — сырые исходники живут недолго.
-#   abort-mpu-uploads   uploads/      AbortMPU 1д     — чистка orphan-parts от
-#                                                       оборванных presigned-PUT заливок.
 #   expire-results-tmp  results-tmp/  Expiration 1д   — временные zip от /result-url.
 # ВАЖНО: results/ (постоянные лекции, ∞ до DELETE) БЕЗ правил. Префикс results-tmp/
 # строго со слешом — НЕ задевает results/ (8-я позиция '-' против '/'), критичный инвариант.
+# ЗАМЕТКА: orphan-части оборванных multipart-заливок чистит САМ MinIO (серверная
+# настройка MINIO_API_STALE_UPLOADS_EXPIRY в docker-compose.yml), а НЕ ILM-правило —
+# действие AbortIncompleteMultipartUpload через lifecycle MinIO не применяет
+# (апстрим закрыл как working-as-intended, minio/minio#19115, #16120).
 mc ilm rule import local/lectures <<'JSON'
 {
   "Rules": [
@@ -26,12 +28,6 @@ mc ilm rule import local/lectures <<'JSON'
       "Status": "Enabled",
       "Filter": { "Prefix": "uploads/" },
       "Expiration": { "Days": 7 }
-    },
-    {
-      "ID": "abort-mpu-uploads",
-      "Status": "Enabled",
-      "Filter": { "Prefix": "uploads/" },
-      "AbortIncompleteMultipartUpload": { "DaysAfterInitiation": 1 }
     },
     {
       "ID": "expire-results-tmp",
@@ -43,4 +39,4 @@ mc ilm rule import local/lectures <<'JSON'
 }
 JSON
 
-echo "minio-init: бакет lectures готов, ILM-правила применены (3 правила)."
+echo "minio-init: бакет lectures готов, ILM-правила применены (2 правила)."

@@ -19,6 +19,13 @@ services:
     environment:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
+      # Серверная авточистка оборванных multipart-заливок (orphan-частей).
+      # MinIO делает это сам, без lifecycle-правила — действие
+      # AbortIncompleteMultipartUpload через ILM в MinIO не работает (закрыто
+      # апстримом как working-as-intended, см. minio/minio#19115, #16120).
+      # Закрепляем дефолты явно ради воспроизводимости деплоя.
+      MINIO_API_STALE_UPLOADS_EXPIRY: 24h
+      MINIO_API_STALE_UPLOADS_CLEANUP_INTERVAL: 6h
     volumes:
       - miniodata:/data
     healthcheck:
