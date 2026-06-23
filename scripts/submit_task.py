@@ -26,6 +26,9 @@
 
     # забрать транскрипт (srt|txt)
     python scripts/submit_task.py transcript <task_id> --format txt
+
+    # удалить задачу (результаты в MinIO + запись в БД, идемпотентно)
+    python scripts/submit_task.py delete <task_id>
 """
 
 from __future__ import annotations
@@ -178,6 +181,18 @@ def cmd_result(args: argparse.Namespace) -> None:
     print(f"saved -> {args.output}")
 
 
+def cmd_delete(args: argparse.Namespace) -> None:
+    """Удалить задачу: чистит результаты/исходник в MinIO и запись в БД.
+
+    Эндпоинт идемпотентен — повтор на уже удалённую/неизвестную задачу тоже
+    отдаёт 204, поэтому отдельной ветки «не найдено» здесь нет.
+    """
+    req = urllib.request.Request(f"{args.base}/tasks/{args.task_id}", method="DELETE")
+    with _request(req):
+        pass
+    print(f"deleted -> {args.task_id}")
+
+
 def cmd_transcript(args: argparse.Namespace) -> None:
     req = urllib.request.Request(
         f"{args.base}/tasks/{args.task_id}/transcript?format={args.format}"
@@ -219,6 +234,10 @@ def _build_parser() -> argparse.ArgumentParser:
     r.add_argument("task_id")
     r.add_argument("-o", "--output", default="result.zip")
     r.set_defaults(func=cmd_result)
+
+    d = sub.add_parser("delete", help="удалить задачу (MinIO + БД, идемпотентно)")
+    d.add_argument("task_id")
+    d.set_defaults(func=cmd_delete)
 
     t = sub.add_parser("transcript", help="забрать транскрипт")
     t.add_argument("task_id")

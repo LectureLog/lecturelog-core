@@ -1,5 +1,3 @@
-import zipfile
-
 import pytest
 
 from lecturelog.domain.models import Section, Topic
@@ -20,7 +18,7 @@ def test_slugify_empty_falls_back():
 
 
 @pytest.mark.asyncio
-async def test_export_produces_zip_with_expected_structure(tmp_path):
+async def test_export_lays_out_output_dir_and_returns_targets(tmp_path):
     # подготовим фейковые фрагменты и слайды
     frag = tmp_path / "f1.mp3"
     frag.write_bytes(b"audio")
@@ -29,17 +27,26 @@ async def test_export_produces_zip_with_expected_structure(tmp_path):
     sec = Section(title="Введение", start="0:00", end="5:00", content="текст", slide_indices=[1])
     topic = Topic(title="Тема", start="0:00", end="5:00", sections=[sec], slide_indices=[1])
 
+    output_dir = tmp_path / "export"
     exporter = ObsidianExporter()
-    zip_path = await exporter.export(
+    result = await exporter.export(
         topics=[topic],
         media_fragments=[frag],
         slide_images=[slide],
-        output_dir=tmp_path / "export",
+        output_dir=output_dir,
         media_kind="audio",
     )
-    assert zip_path.exists() and zip_path.suffix == ".zip"
-    with zipfile.ZipFile(zip_path) as zf:
-        names = zf.namelist()
-    assert any(n.endswith("конспект.md") for n in names)
-    assert any("/audio/" in n or "audio/" in n for n in names)
-    assert any("slide" in n for n in names)
+
+    # Exporter раскладывает output/ на диск и возвращает ExportResult (без zip).
+    output_root = output_dir / "output"
+    assert result.output_root == output_root
+    assert (output_root / "конспект.md").exists()
+    # media_targets/slide_targets — фактические пути на диске.
+    assert len(result.media_targets) == 1
+    assert result.media_targets[0].exists()
+    assert result.media_targets[0].parent.name == "audio"
+    assert len(result.slide_targets) == 1
+    assert result.slide_targets[0].exists()
+    assert result.slide_targets[0].name == "slide-01.png"
+    # result.zip больше НЕ создаётся.
+    assert not (output_dir / "result.zip").exists()

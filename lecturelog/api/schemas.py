@@ -97,6 +97,8 @@ class TaskStatusResponse(BaseModel):
     stage: str | None
     progress_pct: int
     error: str | None
+    # Машинный код ошибки (rate_limit/bad_input/internal) или None вне ошибочного статуса.
+    error_code: str | None
     result_path: str | None
     usage: Usage = Usage()
 
@@ -107,6 +109,7 @@ class TaskStatusResponse(BaseModel):
             stage=task.stage.value if task.stage else None,
             progress_pct=task.progress_pct,
             error=task.error,
+            error_code=task.error_code.value if task.error_code else None,
             result_path=task.result_path,
             # Пустой usage ({}) валидируется в Usage() со всеми None-полями.
             usage=Usage.model_validate(task.usage or {}),
@@ -125,6 +128,7 @@ class TaskStatusResponse(BaseModel):
             "stage": task.stage.value if task.stage else None,
             "progress_pct": task.progress_pct,
             "error": task.error,
+            "error_code": task.error_code.value if task.error_code else None,
             "result_path": task.result_path,
             "usage": task.usage or {},
         }

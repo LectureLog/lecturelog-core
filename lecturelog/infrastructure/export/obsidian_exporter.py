@@ -3,10 +3,9 @@ from __future__ import annotations
 import re
 import shutil
 from pathlib import Path
-from zipfile import ZIP_DEFLATED, ZipFile
 
 from lecturelog.domain.models import Topic
-from lecturelog.domain.ports import Exporter
+from lecturelog.domain.ports import Exporter, ExportResult
 
 
 def _slugify(value: str) -> str:
@@ -26,10 +25,10 @@ def _heading_ref(title: str) -> str:
 
 
 class ObsidianExporter(Exporter):
-    """Реализация порта Exporter: конспект.md + медиа + слайды → ZIP.
+    """Реализация порта Exporter: раскладывает конспект.md + медиа + слайды в output/.
 
-    Для media_kind="audio" встраивает виджет Audio Player, для "video" —
-    нативный wiki-embed Obsidian.
+    НЕ зипует — zip собирается на лету при скачивании. Для media_kind="audio"
+    встраивает виджет Audio Player, для "video" — нативный wiki-embed Obsidian.
     """
 
     async def export(
@@ -39,7 +38,7 @@ class ObsidianExporter(Exporter):
         slide_images: list[Path],
         output_dir: Path,
         media_kind: str,
-    ) -> Path:
+    ) -> ExportResult:
         output_root = output_dir / "output"
         media_dir = output_root / media_kind
         slides_dir = output_root / "slides"
@@ -119,13 +118,10 @@ class ObsidianExporter(Exporter):
 
         (output_root / "конспект.md").write_text("\n".join(lines).strip() + "\n", encoding="utf-8")
 
-        zip_path = output_dir / "result.zip"
-        if zip_path.exists():
-            zip_path.unlink()
-
-        with ZipFile(zip_path, "w", compression=ZIP_DEFLATED) as zip_file:
-            for path in output_root.rglob("*"):
-                if path.is_file():
-                    zip_file.write(path, arcname=path.relative_to(output_dir))
-
-        return zip_path
+        # Зиповку убрали: возвращаем корень output/ и фактические пути —
+        # заливку объектов и сборку zip делает вызывающий код.
+        return ExportResult(
+            output_root=output_root,
+            media_targets=media_targets,
+            slide_targets=slide_targets,
+        )

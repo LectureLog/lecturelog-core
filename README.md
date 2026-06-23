@@ -63,10 +63,17 @@ docker compose up --build
 ```
 
 Поднимутся сервисы: `db` (Postgres 16), `minio` (S3-хранилище лекций), `minio-init`
-(разовое создание бакета) и `api`. Миграции применяются автоматически на старте контейнера.
-По умолчанию MinIO наружу не выставлен (`S3_PUBLIC_ENDPOINT` не задан) — движок ходит к нему
-по internal-endpoint внутри docker-сети, presigned-эндпоинты выключены, работает автономно.
-API доступен на `http://localhost:8000`.
+(разовое создание бакета и применение lifecycle-правил — см. ниже) и `api`. Миграции применяются
+автоматически на старте контейнера. По умолчанию MinIO наружу не выставлен (`S3_PUBLIC_ENDPOINT`
+не задан) — движок ходит к нему по internal-endpoint внутри docker-сети, presigned-эндпоинты
+выключены, работает автономно. API доступен на `http://localhost:8000`.
+
+Сервис `minio-init` (скрипт `docker/minio-init.sh`) идемпотентно настраивает lifecycle (ILM)
+бакета `lectures`: `uploads/` — Expiration 7 дней и AbortIncompleteMultipartUpload 1 день
+(чистка сырых исходников и orphan-частей оборванных presigned-заливок); `results-tmp/` —
+Expiration 1 день (временные ZIP от `/result-url`). Префикс `results/` (постоянные результаты)
+правил НЕ имеет и живёт до явного `DELETE /tasks/{id}`. Образы MinIO/mc запинены по тегам
+релизов (а не `:latest`) для воспроизводимости.
 
 В образе уже присутствуют системные зависимости видео-режима: `ffmpeg`/`ffprobe`
 (нарезка фрагментов и извлечение кадров) и `yt-dlp` (скачивание видео по URL).
@@ -106,10 +113,11 @@ curl http://localhost:8000/api/v1/health
 | ------ | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `POST` | `/tasks`                                 | Создать задачу. multipart: ровно один источник — `audio` (file) / `video` (file) / `video_url` (form) / `s3_key` (form, ссылка на загруженный в MinIO объект под `uploads/`; для него ещё `media`: `audio`\|`video`); опционально `slides` (file) и `no_slides` (form, bool). Возвращает `{"task_id": "<hex>"}`. |
 | `POST` | `/uploads`                               | Выдать presigned PUT URL для загрузки исходника платформой в `uploads/`. Тело: `{filename}`. Ответ: `{key, url, expires_in}`. `409`, если `S3_PUBLIC_ENDPOINT` не задан. |
-| `GET`  | `/tasks/{id}`                            | Статус задачи: `{task_id, stage, progress_pct, error, result_path, usage}`. `result_path` — S3-ключ (`results/<task_id>/result.zip`). `usage` — разбивка расхода ресурсов по стадиям и моделям (см. ниже). |
+| `GET`  | `/tasks/{id}`                            | Статус задачи: `{task_id, stage, progress_pct, error, error_code, result_path, usage}`. `result_path` — S3-префикс папки результата (`results/<task_id>/`). `error_code` — машинный код ошибки (enum, `null` вне ошибочного статуса). `usage` — разбивка расхода ресурсов по стадиям и моделям (см. ниже). |
 | `GET`  | `/tasks/{id}/transcript?format=srt\|txt` | Транскрипт (SRT или plain text).                                                                                                                 |
-| `GET`  | `/tasks/{id}/result`                     | Готовый ZIP (`application/zip`), стримом из S3 (MinIO клиенту не виден; дефолт для консоли/автономии).                                            |
-| `GET`  | `/tasks/{id}/result-url`                 | Presigned GET URL на готовый ZIP: `{url, expires_in}`. Опц. параметр `filename` зашивается в `Content-Disposition` (имя `<filename>.zip`). `409`, если `S3_PUBLIC_ENDPOINT` не задан; `404`, если результат не готов. |
+| `GET`  | `/tasks/{id}/result`                     | Готовый ZIP (`application/zip`), собирается НА ЛЕТУ из объектов под `results/<task_id>/` и стримится клиенту (MinIO клиенту не виден; дефолт для консоли/автономии).                                            |
+| `GET`  | `/tasks/{id}/result-url`                 | Presigned GET URL на ZIP результата: `{url, expires_in}`. ZIP собирается во временный объект `results-tmp/<task_id>/<uuid>.zip` (его чистит lifecycle MinIO / DELETE). Опц. параметр `filename` зашивается в `Content-Disposition` (имя `<filename>.zip`). `409`, если `S3_PUBLIC_ENDPOINT` не задан; `404`, если результат не готов. |
+| `DELETE` | `/tasks/{id}`                          | Идемпотентно удалить задачу: чистит объекты в MinIO (весь префикс `results/<task_id>/`, временные `results-tmp/<task_id>/` и связанный `uploads/`-исходник) и строку в БД. Повтор на уже удалённую/неизвестную задачу → `204`. |
 | `GET`  | `/health`                                | Healthcheck.                                                                                                                                     |
 
 ### Коды ответов
@@ -125,6 +133,7 @@ curl http://localhost:8000/api/v1/health
   - `202` — ещё не готово: `{"status":"in_progress","stage":...,"progress":...}`
   - `200` — готово (SRT-файл или plain text).
 - `GET /tasks/{id}/result`: `200` — ZIP; `404` — результат не готов / файл не найден / задачи нет.
+- `DELETE /tasks/{id}`: `204` — задача и её объекты удалены (идемпотентно, в т.ч. на неизвестную задачу).
 
 ### Учёт расхода ресурсов (`usage`)
 
@@ -145,14 +154,17 @@ curl http://localhost:8000/api/v1/health
 движок шлёт одну исходящую `POST` — fire-and-forget, с коротким таймаутом и без ретраев.
 Без `PLATFORM_CALLBACK_URL` движок работает автономно как раньше (поллинг `GET /tasks/{id}` всегда доступен).
 
-Тело тонкое — `{task_id, status, error?}` (`status`: `done`\|`failed`\|`interrupted`); полное состояние
+Тело тонкое — `{task_id, status, error, error_code}` (`status`: `done`\|`failed`\|`interrupted`; ключи
+`error`/`error_code` присутствуют всегда, вне ошибочного статуса — `null`); полное состояние
 (`usage`, `result_path`) платформа добирает через `GET /tasks/{id}`. Тело подписывается
 HMAC-SHA256 секретом `LECTURELOG_WEBHOOK_SECRET`, подпись — в заголовке `X-Webhook-Signature`.
 
 ### Хранилище и загрузка через MinIO
 
 Исходники и результаты лежат в S3-совместимом хранилище (MinIO): исходники — под `uploads/`,
-результаты — под `results/<task_id>/result.zip`. Возможны два сценария.
+результат — папкой `results/<task_id>/` (отдельные объекты `output/...` + нейтральное дерево
+`structure.json`); единый ZIP не хранится, а собирается на лету при скачивании. Временные ZIP
+от `/result-url` складываются под `results-tmp/<task_id>/`. Возможны два сценария.
 
 - **Автономный (дефолт)**: исходник передаётся multipart-файлом в `POST /tasks`, результат
   забирается стримом через `GET /tasks/{id}/result`. MinIO наружу не выставлен, presigned-ссылки

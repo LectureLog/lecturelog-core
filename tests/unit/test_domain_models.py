@@ -1,4 +1,4 @@
-from lecturelog.domain.enums import PipelineStage, TaskStatus
+from lecturelog.domain.enums import ErrorCode, PipelineStage, TaskStatus
 from lecturelog.domain.models import Section, Task, Topic
 
 
@@ -45,3 +45,12 @@ def test_task_accepts_stage_and_progress():
     )
     assert task.stage == PipelineStage.TRANSCRIBE
     assert task.progress_pct == 15
+
+
+def test_task_error_code_defaults_none():
+    assert Task(task_id="t", source_kind="audio").error_code is None
+
+
+def test_task_accepts_error_code():
+    t = Task(task_id="t", source_kind="audio", error_code=ErrorCode.RATE_LIMIT)
+    assert t.error_code is ErrorCode.RATE_LIMIT

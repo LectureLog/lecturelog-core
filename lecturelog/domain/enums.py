@@ -21,3 +21,12 @@ class TaskStatus(StrEnum):
     DONE = "done"
     FAILED = "failed"
     INTERRUPTED = "interrupted"
+
+
+class ErrorCode(StrEnum):
+    # Повторяемая ошибка: лимит Gemini/Groq (429 / RESOURCE_EXHAUSTED / 503 / UNAVAILABLE).
+    RATE_LIMIT = "rate_limit"
+    # Вход битый/не распознан: retry бесполезен (нет файла, неподдерживаемый формат).
+    BAD_INPUT = "bad_input"
+    # Всё прочее (дефолт): неклассифицированный внутренний сбой ядра.
+    INTERNAL = "internal"

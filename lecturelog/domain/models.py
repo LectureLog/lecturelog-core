@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 
 from pydantic import BaseModel, Field
 
-from lecturelog.domain.enums import PipelineStage, TaskStatus
+from lecturelog.domain.enums import ErrorCode, PipelineStage, TaskStatus
 
 
 def _utcnow() -> datetime:
@@ -30,10 +30,16 @@ class Topic(BaseModel):
 class Task(BaseModel):
     task_id: str
     source_kind: str
+    # Ключ исходника в MinIO (uploads/<uuid>/<file>) для s3_object-источника.
+    # Сохраняется при создании задачи, чтобы DELETE мог удалить исходник.
+    # Для остальных kind (audio/video/video_url) — None.
+    source_key: str | None = None
     status: TaskStatus = TaskStatus.PENDING
     stage: PipelineStage | None = None
     progress_pct: int = 0
     error: str | None = None
+    # Машинный код ошибки (классифицируется при переходе в FAILED). None — нет ошибки.
+    error_code: ErrorCode | None = None
     result_path: str | None = None
     usage: dict = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=_utcnow)

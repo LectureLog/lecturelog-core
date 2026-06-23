@@ -114,3 +114,115 @@ def test_upload_download_roundtrip(tmp_path):
     dst = tmp_path / "nested" / "out.bin"
     asyncio.run(s.download_file("results/t/result.zip", dst))
     assert dst.read_bytes() == b"payload"
+
+
+def test_delete_prefix_lists_and_deletes_all(tmp_path):
+    # get_paginator в aiobotocore синхронный (не awaitable); paginate() -> async-итератор.
+    listed = []
+    deleted = []
+
+    class _Pages:
+        def __aiter__(self):
+            async def gen():
+                yield {
+                    "Contents": [
+                        {"Key": "results/t/result.zip"},
+                        {"Key": "results/t/a.png"},
+                    ]
+                }
+                yield {}  # страница без Contents — не должна падать
+
+            return gen()
+
+    class _Paginator:
+        def paginate(self, Bucket, Prefix):
+            listed.append((Bucket, Prefix))
+            return _Pages()
+
+    class DelStub:
+        def get_paginator(self, op):
+            assert op == "list_objects_v2"
+            return _Paginator()
+
+        async def delete_objects(self, Bucket, Delete):
+            deleted.append((Bucket, [o["Key"] for o in Delete["Objects"]]))
+
+    s = _storage(client=DelStub())
+    asyncio.run(s.delete_prefix("results/t/"))
+    assert listed == [("b", "results/t/")]
+    assert deleted == [("b", ["results/t/result.zip", "results/t/a.png"])]
+
+
+def test_delete_prefix_empty_is_noop(tmp_path):
+    deleted = []
+
+    class _EmptyPages:
+        def __aiter__(self):
+            async def gen():
+                yield {}
+
+            return gen()
+
+    class _EmptyPaginator:
+        def paginate(self, Bucket, Prefix):
+            return _EmptyPages()
+
+    class DelStub:
+        def get_paginator(self, op):
+            return _EmptyPaginator()
+
+        async def delete_objects(self, Bucket, Delete):
+            deleted.append(Delete)
+
+    s = _storage(client=DelStub())
+    asyncio.run(s.delete_prefix("results/none/"))
+    assert deleted == []  # нечего удалять — delete_objects не вызывается
+
+
+def test_list_keys_paginates_and_collects(tmp_path):
+    # Пагинация: ключи собираются со всех страниц; страница без Contents не падает.
+    listed = []
+
+    class _Pages:
+        def __aiter__(self):
+            async def gen():
+                yield {"Contents": [{"Key": "results/t/output/a.txt"}]}
+                yield {}  # страница без Contents — не должна падать
+                yield {"Contents": [{"Key": "results/t/output/b.txt"}]}
+
+            return gen()
+
+    class _Paginator:
+        def paginate(self, Bucket, Prefix):
+            listed.append((Bucket, Prefix))
+            return _Pages()
+
+    class ListStub:
+        def get_paginator(self, op):
+            assert op == "list_objects_v2"
+            return _Paginator()
+
+    s = _storage(client=ListStub())
+    keys = asyncio.run(s.list_keys("results/t/"))
+    assert listed == [("b", "results/t/")]
+    assert keys == ["results/t/output/a.txt", "results/t/output/b.txt"]
+
+
+def test_list_keys_empty_returns_empty_list(tmp_path):
+    class _EmptyPages:
+        def __aiter__(self):
+            async def gen():
+                yield {}
+
+            return gen()
+
+    class _EmptyPaginator:
+        def paginate(self, Bucket, Prefix):
+            return _EmptyPages()
+
+    class ListStub:
+        def get_paginator(self, op):
+            return _EmptyPaginator()
+
+    s = _storage(client=ListStub())
+    assert asyncio.run(s.list_keys("results/none/")) == []

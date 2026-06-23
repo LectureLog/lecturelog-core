@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 from lecturelog.domain.enums import TaskStatus
@@ -65,6 +66,18 @@ class MediaIngestor(ABC):
         """Извлечь аудиодорожку из видео."""
 
 
+@dataclass(frozen=True)
+class ExportResult:
+    """Итог раскладки exporter: корень output/ и фактические пути медиа/слайдов.
+
+    Единый источник истины путей для заливки объектов и build_structure
+    (ключи MinIO считаются из этих путей одной формулой)."""
+
+    output_root: Path
+    media_targets: list[Path]
+    slide_targets: list[Path]
+
+
 class Exporter(ABC):
     @abstractmethod
     async def export(
@@ -74,8 +87,11 @@ class Exporter(ABC):
         slide_images: list[Path],
         output_dir: Path,
         media_kind: str,
-    ) -> Path:
-        """Собрать конспект.md + медиа + слайды в ZIP, вернуть путь к ZIP."""
+    ) -> ExportResult:
+        """Разложить конспект.md + медиа + слайды в output_dir/output/.
+
+        НЕ зипует (zip собирается на лету при скачивании). Возвращает ExportResult
+        с корнем output/ и фактическими путями медиа/слайдов."""
 
 
 class TaskRepository(ABC):
@@ -91,6 +107,10 @@ class TaskRepository(ABC):
     @abstractmethod
     async def mark_stale_as_interrupted(self) -> int:
         """Пометить все PROCESSING-задачи как INTERRUPTED (при старте). Вернуть кол-во."""
+
+    @abstractmethod
+    async def delete(self, task_id: str) -> None:
+        """Удалить строку задачи. Идемпотентно: отсутствие строки — не ошибка."""
 
 
 class Storage(ABC):
@@ -121,9 +141,27 @@ class Storage(ABC):
         """Presigned GET URL. Если публичный endpoint не задан — None
         (наружу presigned не выдаётся, работает только стрим)."""
 
+    @abstractmethod
+    async def delete_prefix(self, prefix: str) -> None:
+        """Удалить все объекты бакета с данным ключевым префиксом.
+        Идемпотентно: отсутствие объектов под префиксом — не ошибка (no-op)."""
+
+    @abstractmethod
+    async def list_keys(self, prefix: str) -> list[str]:
+        """Вернуть список ключей объектов бакета с данным префиксом.
+        Пустой результат — пустой список (не ошибка). Порядок реализация
+        не гарантирует на уровне порта; адаптеры возвращают как есть."""
+
 
 class WebhookNotifier(ABC):
     @abstractmethod
-    async def notify(self, task_id: str, status: TaskStatus, error: str | None = None) -> None:
+    async def notify(
+        self,
+        task_id: str,
+        status: TaskStatus,
+        error: str | None = None,
+        error_code: str | None = None,
+    ) -> None:
         """Best-effort пуш платформе о терминальном статусе задачи.
+        error_code — машинный код ошибки (rate_limit/bad_input/internal) или None.
         Реализация НЕ должна выбрасывать наружу и НЕ должна блокировать дольше своего таймаута."""

@@ -98,7 +98,58 @@ def test_storage_complete_impl_instantiates():
         ):
             return None
 
+        async def delete_prefix(self, prefix):
+            return None
+
+        async def list_keys(self, prefix):
+            return []
+
     assert isinstance(Good(), Storage)
+
+
+def test_storage_incomplete_without_list_keys_cannot_instantiate():
+    # Реализация без list_keys остаётся абстрактной.
+    class Bad(Storage):
+        async def upload_file(self, local_path, key):
+            pass
+
+        async def download_file(self, key, local_path):
+            pass
+
+        async def presigned_put(self, key, expires_in=None):
+            return None
+
+        async def presigned_get(
+            self, key, expires_in=None, download_filename=None, content_type=None
+        ):
+            return None
+
+        async def delete_prefix(self, prefix):
+            return None
+
+    with pytest.raises(TypeError):
+        Bad()
+
+
+def test_storage_incomplete_without_delete_prefix_cannot_instantiate():
+    # Реализация без delete_prefix остаётся абстрактной.
+    class Bad(Storage):
+        async def upload_file(self, local_path, key):
+            pass
+
+        async def download_file(self, key, local_path):
+            pass
+
+        async def presigned_put(self, key, expires_in=None):
+            return None
+
+        async def presigned_get(
+            self, key, expires_in=None, download_filename=None, content_type=None
+        ):
+            return None
+
+    with pytest.raises(TypeError):
+        Bad()
 
 
 def test_webhook_notifier_is_abstract():
@@ -109,14 +160,14 @@ def test_webhook_notifier_is_abstract():
 
 @pytest.mark.asyncio
 async def test_webhook_notifier_subclass_instantiates_and_notifies():
-    # Сабкласс с реализованным notify инстанцируется; сигнатура с default error=None.
+    # Сабкласс с реализованным notify инстанцируется; сигнатура с default error/error_code=None.
     calls = []
 
     class Impl(WebhookNotifier):
-        async def notify(self, task_id, status, error=None):
-            calls.append((task_id, status, error))
+        async def notify(self, task_id, status, error=None, error_code=None):
+            calls.append((task_id, status, error, error_code))
 
     impl = Impl()
     assert isinstance(impl, WebhookNotifier)
     await impl.notify("t1", TaskStatus.DONE)
-    assert calls == [("t1", TaskStatus.DONE, None)]
+    assert calls == [("t1", TaskStatus.DONE, None, None)]

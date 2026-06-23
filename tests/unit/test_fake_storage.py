@@ -39,3 +39,39 @@ async def test_presigned_contains_key_and_filename():
     get = await s.presigned_get("results/t/result.zip", download_filename="Лекция")
     assert get is not None and "results/t/result.zip" in get
     assert "Лекция" in get
+
+
+@pytest.mark.asyncio
+async def test_delete_prefix_removes_matching_and_is_idempotent(tmp_path):
+    s = FakeStorage()
+    src = tmp_path / "x.bin"
+    src.write_bytes(b"d")
+    await s.upload_file(src, "results/t/result.zip")
+    await s.upload_file(src, "results/t/extra.png")
+    await s.upload_file(src, "uploads/u/lecture.mp3")
+
+    await s.delete_prefix("results/t/")
+    assert "results/t/result.zip" not in s.objects
+    assert "results/t/extra.png" not in s.objects
+    assert "uploads/u/lecture.mp3" in s.objects  # чужой префикс не тронут
+
+    # Идемпотентность: повтор по уже пустому префиксу не падает.
+    await s.delete_prefix("results/t/")
+    await s.delete_prefix("nothing/here/")
+
+
+@pytest.mark.asyncio
+async def test_list_keys_returns_matching_sorted_and_idempotent(tmp_path):
+    s = FakeStorage()
+    src = tmp_path / "x.bin"
+    src.write_bytes(b"d")
+    await s.upload_file(src, "results/t/output/b.txt")
+    await s.upload_file(src, "results/t/output/a.txt")
+    await s.upload_file(src, "uploads/u/lecture.mp3")
+
+    keys = await s.list_keys("results/t/")
+    # Только ключи с искомым префиксом, отсортированы; чужой префикс не попадает.
+    assert keys == ["results/t/output/a.txt", "results/t/output/b.txt"]
+
+    # Пустой результат -> [].
+    assert await s.list_keys("nothing/here/") == []
