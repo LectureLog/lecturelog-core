@@ -58,7 +58,9 @@ Obsidian (Settings → Community plugins), иначе вместо плеера 
 Запуск через Docker Compose:
 
 ```bash
-cp .env.example .env          # впишите реальные GROQ_API_KEYS и GEMINI_API_KEYS
+cp .env.example .env
+# Заполните GROQ_API_KEYS, GEMINI_API_KEYS, CORE_POSTGRES_PASSWORD,
+# S3_ACCESS_KEY и S3_SECRET_KEY.
 docker compose up --build
 ```
 

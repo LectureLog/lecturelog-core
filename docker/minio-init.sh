@@ -4,11 +4,15 @@
 # затем завершается. Идемпотентен: повторный старт безопасен.
 set -eu
 
+: "${S3_BUCKET:?S3_BUCKET is required}"
+: "${S3_ACCESS_KEY:?S3_ACCESS_KEY is required}"
+: "${S3_SECRET_KEY:?S3_SECRET_KEY is required}"
+
 # Подключаемся к локальному MinIO внутри docker-сети.
-mc alias set local http://minio:9000 minioadmin minioadmin
+mc alias set local http://minio:9000 "$S3_ACCESS_KEY" "$S3_SECRET_KEY"
 
 # Бакет создаём идемпотентно.
-mc mb --ignore-existing local/lectures
+mc mb --ignore-existing "local/$S3_BUCKET"
 
 # Применяем lifecycle через rule import: JSON ЦЕЛИКОМ перезаписывает набор правил
 # бакета → повторный запуск не дублирует и не падает (идемпотентно).
@@ -20,7 +24,7 @@ mc mb --ignore-existing local/lectures
 # настройка MINIO_API_STALE_UPLOADS_EXPIRY в docker-compose.yml), а НЕ ILM-правило —
 # действие AbortIncompleteMultipartUpload через lifecycle MinIO не применяет
 # (апстрим закрыл как working-as-intended, minio/minio#19115, #16120).
-mc ilm rule import local/lectures <<'JSON'
+mc ilm rule import "local/$S3_BUCKET" <<'JSON'
 {
   "Rules": [
     {
@@ -39,4 +43,4 @@ mc ilm rule import local/lectures <<'JSON'
 }
 JSON
 
-echo "minio-init: бакет lectures готов, ILM-правила применены (2 правила)."
+echo "minio-init: бакет $S3_BUCKET готов, ILM-правила применены (2 правила)."

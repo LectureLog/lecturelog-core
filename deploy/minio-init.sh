@@ -3,9 +3,9 @@
 # Запускается в контейнере minio/mc как идемпотентный init-step.
 set -eu
 
-S3_BUCKET="${S3_BUCKET:-lectures}"
-S3_ACCESS_KEY="${S3_ACCESS_KEY:-lecturelog}"
-S3_SECRET_KEY="${S3_SECRET_KEY:-lecturelog-minio-secret}"
+: "${S3_BUCKET:?S3_BUCKET is required}"
+: "${S3_ACCESS_KEY:?S3_ACCESS_KEY is required}"
+: "${S3_SECRET_KEY:?S3_SECRET_KEY is required}"
 
 mc alias set local http://lecturelog-core-minio:9000 "$S3_ACCESS_KEY" "$S3_SECRET_KEY"
 

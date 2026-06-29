@@ -12,7 +12,7 @@ from lecturelog.infrastructure.webhook.http_notifier import (
 )
 
 _URL = "https://platform.example/cb"
-_SECRET = "shared-secret"
+_SECRET = "test-fixture"
 
 
 def test_hmac_signature_is_deterministic():
