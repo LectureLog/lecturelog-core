@@ -85,6 +85,73 @@ curl http://localhost:8000/api/v1/health
 # {"status":"ok"}
 ```
 
+### VPS: готовый образ из GHCR
+
+Основной prod-like сценарий для быстрой проверки — готовый Docker image из GHCR,
+без сборки исходников на сервере. Каналы образов:
+
+| Docker tag | Откуда берётся | Назначение |
+|---|---|---|
+| `dev` | каждый push в git-ветку `dev` | быстрый прод-чек текущей разработки |
+| `latest` | git tag `v*` | стабильный релиз |
+| `vX.Y.Z` | git tag `vX.Y.Z` | воспроизводимый релиз |
+
+`latest` — это Docker-тег, не git-ветка. Стабильный код живёт в `main`, активная
+разработка — в `dev`.
+
+Минимальное развёртывание core на VPS:
+
+```bash
+mkdir -p /opt/lecturelog-core
+cd /opt/lecturelog-core
+curl -fsSLo docker-compose.yml https://raw.githubusercontent.com/LectureLog/lecturelog-core/refs/heads/dev/deploy/compose.vps.yml
+curl -fsSLo .env https://raw.githubusercontent.com/LectureLog/lecturelog-core/refs/heads/dev/deploy/env.core.example
+curl -fsSLo minio-init.sh https://raw.githubusercontent.com/LectureLog/lecturelog-core/refs/heads/dev/deploy/minio-init.sh
+chmod +x minio-init.sh
+docker network create lecturelog-shared || true
+```
+
+Отредактируйте `.env`: задайте `GROQ_API_KEYS`, `GEMINI_API_KEYS`,
+`CORE_POSTGRES_PASSWORD`, `S3_SECRET_KEY`, публичный `S3_PUBLIC_ENDPOINT` и общий
+с web `LECTURELOG_WEBHOOK_SECRET`. Для связки с web укажите:
+
+```env
+PLATFORM_CALLBACK_URL=https://app.example.com/webhooks/core
+S3_PUBLIC_ENDPOINT=https://files.example.com
+```
+
+Затем запустите:
+
+```bash
+docker compose pull
+docker compose up -d
+docker compose logs -f api
+```
+
+Для dev-проверки оставьте `LECTURELOG_CORE_IMAGE_TAG=dev`. Для стабильного канала
+используйте `latest`, для воспроизводимого деплоя — конкретный тег, например
+`v0.2.0`.
+
+API и MinIO публикуются только на `127.0.0.1`; публичный HTTPS-доступ должен идти
+через nginx/caddy. Core подключается к общей Docker-сети `lecturelog-shared`, чтобы
+web мог обращаться к API по `http://lecturelog-core-api:8000`.
+
+### Выпуск релиза
+
+1. Проверьте, что `dev` зелёный и его образ `:dev` проверен на VPS.
+2. Перенесите проверенный код в `main`.
+3. Поставьте semver-тег и отправьте его в GitHub:
+
+```bash
+git checkout main
+git merge --ff-only dev
+git tag v0.2.0
+git push origin main v0.2.0
+```
+
+GitHub Actions соберёт `ghcr.io/lecturelog/lecturelog-core:v0.2.0`,
+обновит `ghcr.io/lecturelog/lecturelog-core:latest` и создаст GitHub Release.
+
 ## API
 
 Базовый префикс — `/api/v1`.
