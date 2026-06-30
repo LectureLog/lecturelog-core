@@ -15,9 +15,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl unzip \
     && apt-get purge -y curl unzip && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/*
 
-# Свежий yt-dlp (старая версия не тянет актуальный YouTube).
-RUN pip install --no-cache-dir --upgrade yt-dlp
 COPY --from=builder /install /usr/local
+# Свежий yt-dlp (старая версия не тянет актуальный YouTube).
+# Устанавливаем ПОСЛЕ COPY из builder, чтобы не перезатёрло свежую версию.
+RUN pip install --no-cache-dir --upgrade yt-dlp
 WORKDIR /app
 COPY . .
 RUN pip install --no-cache-dir --no-deps -e .
