@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 
+import pytest
+
 from lecturelog.infrastructure.storage.s3_storage import S3Storage
 
 
@@ -122,6 +124,64 @@ def test_presigned_url_is_sigv4_and_public_host():
     # Хост публичный, internal не светится; path-style (bucket в пути).
     assert url.startswith("https://s3.lecturelog.sarvizza.com/lectures/uploads/abc/lecture.mp3")
     assert "lecturelog-core-minio" not in url
+    # expires_in прокидывается в подпись (default_expiry=900).
+    assert "X-Amz-Expires=900" in url
+
+
+def test_default_presign_factory_without_public_endpoint_raises():
+    # Прямой вызов presign-фабрики без public_endpoint должен явно падать ValueError,
+    # а не отдавать тёмную ошибку botocore про endpoint_url=None.
+    s = _storage(public_endpoint=None)
+    with pytest.raises(ValueError):
+        s._default_presign_factory()
+
+
+def test_presigned_methods_without_public_endpoint_still_return_none():
+    # Контракт fail-fast в фабрике НЕ должен сломать ранний return None:
+    # presigned-методы при public_endpoint=None по-прежнему возвращают None и фабрику не дёргают.
+    s = _storage(public_endpoint=None)
+    assert asyncio.run(s.presigned_put("uploads/abc/lecture.mp3")) is None
+    assert asyncio.run(s.presigned_get("results/x.zip")) is None
+
+
+def test_default_client_factory_uses_internal_endpoint():
+    # Сетевые операции идут на internal endpoint: реальный aioboto3-клиент офлайн,
+    # читаем endpoint_url из client.meta (сети не требует).
+    internal = "http://lecturelog-core-minio:9000"
+    s = S3Storage(
+        internal_endpoint=internal,
+        public_endpoint="https://s3.lecturelog.sarvizza.com",
+        bucket="lectures",
+        access_key="ak",
+        secret_key="sk",
+        region="us-east-1",
+    )
+
+    async def _check():
+        async with s._default_client_factory() as client:
+            # botocore может нормализовать trailing slash — сравниваем без него.
+            assert client.meta.endpoint_url.rstrip("/") == internal.rstrip("/")
+
+    asyncio.run(_check())
+
+
+def test_default_presign_factory_uses_public_endpoint():
+    # Presigned-ссылки подписываются под public endpoint: тот же офлайн-приём с client.meta.
+    public = "https://s3.lecturelog.sarvizza.com"
+    s = S3Storage(
+        internal_endpoint="http://lecturelog-core-minio:9000",
+        public_endpoint=public,
+        bucket="lectures",
+        access_key="ak",
+        secret_key="sk",
+        region="us-east-1",
+    )
+
+    async def _check():
+        async with s._default_presign_factory() as client:
+            assert client.meta.endpoint_url.rstrip("/") == public.rstrip("/")
+
+    asyncio.run(_check())
 
 
 def test_upload_download_roundtrip(tmp_path):

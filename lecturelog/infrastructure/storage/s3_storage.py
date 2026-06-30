@@ -80,6 +80,11 @@ class S3Storage(Storage):
 
     def _default_presign_factory(self) -> AbstractAsyncContextManager:
         # Клиент для presigned — public endpoint (подпись сразу под публичный хост).
+        # Fail-fast: без public_endpoint фабрику строить нельзя (endpoint_url=None дал бы
+        # тёмную ошибку botocore). Инвариант: presigned-методы делают ранний return None
+        # при falsy public_endpoint и сюда не доходят — это защита от прямого вызова.
+        if not self._public_endpoint:
+            raise ValueError("presign-фабрика требует public_endpoint")
         return self._build_factory(self._public_endpoint)
 
     async def upload_file(self, local_path: Path, key: str) -> None:
