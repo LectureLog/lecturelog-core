@@ -5,6 +5,7 @@
     python -m scripts.cookies status
     python -m scripts.cookies clear
 """
+
 from __future__ import annotations
 
 import argparse

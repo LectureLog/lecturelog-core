@@ -72,7 +72,5 @@ class PgCookieStore(CookieStore):
 
     async def delete(self) -> None:
         async with self._session_factory() as session:
-            await session.execute(
-                delete(YoutubeCookieRow).where(YoutubeCookieRow.id == _COOKIE_ID)
-            )
+            await session.execute(delete(YoutubeCookieRow).where(YoutubeCookieRow.id == _COOKIE_ID))
             await session.commit()

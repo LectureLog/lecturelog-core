@@ -23,6 +23,5 @@ def validate_netscape_cookies(content: bytes) -> None:
         if len(line.split("\t")) == 7:
             return
     raise InvalidCookieFormat(
-        "Не похоже на cookies.txt (Netscape format). Экспортируй cookies "
-        "расширением браузера."
+        "Не похоже на cookies.txt (Netscape format). Экспортируй cookies расширением браузера."
     )

@@ -14,8 +14,10 @@ class FakeCookieStore(CookieStore):
     async def save(self, content): ...
     async def get(self):
         return self._content
+
     async def status(self):
         return CookieStatus(exists=self._content is not None, updated_at=None, size=0)
+
     async def delete(self): ...
 
 
@@ -33,6 +35,7 @@ def captured(monkeypatch, tmp_path):
 
         class P:
             returncode = 0
+
             async def communicate(self):
                 # Эмулируем создание выходного файла yt-dlp.
                 out = Path(argv[argv.index("-o") + 1])
@@ -52,9 +55,7 @@ def captured(monkeypatch, tmp_path):
 async def test_download_uses_cookies_and_deno(captured, tmp_path):
     ingestor = VideoIngestor(cookie_store=FakeCookieStore(b"COOKIEDATA"))
     out_dir = tmp_path / "out"
-    await ingestor.ingest(
-        VideoUrlSource(url="https://youtu.be/x"), output_dir=out_dir
-    )
+    await ingestor.ingest(VideoUrlSource(url="https://youtu.be/x"), output_dir=out_dir)
     argv = captured["argv"]
     assert "--cookies" in argv
     assert captured["cookies_existed"] is True
@@ -68,9 +69,7 @@ async def test_download_uses_cookies_and_deno(captured, tmp_path):
 @pytest.mark.asyncio
 async def test_download_without_cookies_omits_flag(captured, tmp_path):
     ingestor = VideoIngestor(cookie_store=FakeCookieStore(None))
-    await ingestor.ingest(
-        VideoUrlSource(url="https://youtu.be/x"), output_dir=tmp_path / "out"
-    )
+    await ingestor.ingest(VideoUrlSource(url="https://youtu.be/x"), output_dir=tmp_path / "out")
     argv = captured["argv"]
     assert "--cookies" not in argv
     assert "--js-runtimes" in argv and "deno" in argv

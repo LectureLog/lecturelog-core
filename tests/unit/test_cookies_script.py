@@ -9,14 +9,17 @@ from lecturelog.domain.ports import CookieStatus, CookieStore
 class FakeStore(CookieStore):
     def __init__(self):
         self._c = None
+
     async def save(self, content):
         self._c = content
         return CookieStatus(exists=True, updated_at=None, size=len(content))
+
     async def get(self):
         return self._c
+
     async def status(self):
-        return CookieStatus(exists=self._c is not None, updated_at=None,
-                            size=len(self._c or b""))
+        return CookieStatus(exists=self._c is not None, updated_at=None, size=len(self._c or b""))
+
     async def delete(self):
         self._c = None
 

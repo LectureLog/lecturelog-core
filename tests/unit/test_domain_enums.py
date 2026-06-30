@@ -23,5 +23,8 @@ def test_error_code_values():
     assert ErrorCode.INTERNAL == "internal"
     # Все значения (каталог минимален).
     assert {e.value for e in ErrorCode} == {
-        "rate_limit", "bad_input", "internal", "cookies_invalid"
+        "rate_limit",
+        "bad_input",
+        "internal",
+        "cookies_invalid",
     }
