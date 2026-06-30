@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import JSON, DateTime, Integer, String
+from sqlalchemy import JSON, CheckConstraint, DateTime, Integer, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from lecturelog.domain.enums import ErrorCode, PipelineStage, TaskStatus
@@ -31,6 +31,18 @@ class TaskRow(Base):
     usage: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class YoutubeCookieRow(Base):
+    """Singleton-строка с cookies.txt для yt-dlp. id зафиксирован = 1."""
+
+    __tablename__ = "youtube_cookies"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    content: Mapped[str] = mapped_column(Text)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (CheckConstraint("id = 1", name="ck_youtube_cookies_singleton"),)
 
 
 def task_to_row(task: Task) -> TaskRow:

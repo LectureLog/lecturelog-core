@@ -10,6 +10,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from starlette.background import BackgroundTask
 
 from lecturelog.api.dependencies import (
+    get_cookie_store,
     get_gemini,
     get_presign_expiry,
     get_repository,
@@ -19,6 +20,7 @@ from lecturelog.api.dependencies import (
     get_worker,
 )
 from lecturelog.api.schemas import (
+    CookieStatusResponse,
     CreateTaskResponse,
     ErrorResponse,
     ResultUrlResponse,
@@ -47,8 +49,15 @@ from lecturelog.infrastructure.media.url_utils import is_url
 from lecturelog.infrastructure.slides.document_provider import DocumentSlideProvider
 from lecturelog.infrastructure.slides.video_provider import VideoSlideProvider
 from lecturelog.infrastructure.srt import srt_to_plain_text
+from lecturelog.infrastructure.youtube.cookie_validation import (
+    InvalidCookieFormat,
+    validate_netscape_cookies,
+)
 
 router = APIRouter(prefix="/api/v1")
+
+# Защита от заливки мусора: cookies.txt всегда мал (десятки КБ).
+_MAX_COOKIE_BYTES = 1 * 1024 * 1024  # 1 МБ
 
 # Размер чанка для стриминговой записи UploadFile на диск:
 # .read() без аргумента грузит весь файл в RAM, что недопустимо на больших медиа.
@@ -477,3 +486,50 @@ async def get_task_result_url(
 @router.get("/health", summary="Проверка живости сервиса", tags=["health"])
 async def health():
     return {"status": "ok"}
+
+
+@router.get(
+    "/youtube/cookies",
+    response_model=CookieStatusResponse,
+    summary="Статус YouTube-cookies (без содержимого)",
+    tags=["youtube"],
+)
+async def get_youtube_cookies(cookie_store=Depends(get_cookie_store)):
+    st = await cookie_store.status()
+    return CookieStatusResponse(exists=st.exists, updated_at=st.updated_at, size=st.size)
+
+
+@router.put(
+    "/youtube/cookies",
+    response_model=CookieStatusResponse,
+    summary="Загрузить/заменить YouTube-cookies (cookies.txt)",
+    tags=["youtube"],
+    responses={
+        400: {"model": ErrorResponse, "description": "Некорректный формат cookies"},
+        413: {"model": ErrorResponse, "description": "Файл слишком большой"},
+    },
+)
+async def put_youtube_cookies(
+    file: Annotated[UploadFile, File()],
+    cookie_store=Depends(get_cookie_store),
+):
+    content = await file.read()
+    if len(content) > _MAX_COOKIE_BYTES:
+        return JSONResponse(status_code=413, content={"detail": "Файл cookies слишком большой"})
+    try:
+        validate_netscape_cookies(content)
+    except InvalidCookieFormat as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+    st = await cookie_store.save(content)
+    return CookieStatusResponse(exists=st.exists, updated_at=st.updated_at, size=st.size)
+
+
+@router.delete(
+    "/youtube/cookies",
+    status_code=204,
+    summary="Удалить YouTube-cookies (вернуться к анонимному режиму)",
+    tags=["youtube"],
+)
+async def delete_youtube_cookies(cookie_store=Depends(get_cookie_store)):
+    await cookie_store.delete()
+    return Response(status_code=204)

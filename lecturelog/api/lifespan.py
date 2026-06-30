@@ -34,6 +34,10 @@ async def lifespan(app: FastAPI):
     session_factory = make_session_factory(engine)
     repo = PostgresTaskRepository(session_factory=session_factory)
 
+    from lecturelog.infrastructure.youtube.pg_cookie_store import PgCookieStore
+
+    cookie_store = PgCookieStore(session_factory=session_factory)
+
     interrupted = await repo.mark_stale_as_interrupted()
     if interrupted:
         logger.warning("Помечено INTERRUPTED задач после рестарта: %d", interrupted)
@@ -78,7 +82,7 @@ async def lifespan(app: FastAPI):
         structurizer=structurizer,
         audio_cutter=FfmpegAudioCutter(),
         video_cutter=FfmpegVideoCutter(),
-        ingestor=VideoIngestor(),
+        ingestor=VideoIngestor(cookie_store=cookie_store),
         exporter=ObsidianExporter(),
         progress_plan_factory=ProgressPlan.for_audio,
         webhook_notifier=notifier,
@@ -91,6 +95,7 @@ async def lifespan(app: FastAPI):
     app.state.repository = repo
     app.state.worker = worker
     app.state.storage = storage
+    app.state.cookie_store = cookie_store
     app.state.presign_expiry = cfg.s3.presign_expiry
     # Локальный эфемерный scratch для внутренних стадий пайплайна (не S3).
     app.state.work_dir = Path(os.getenv("WORK_DIR", "/app/data"))

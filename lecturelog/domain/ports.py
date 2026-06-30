@@ -3,6 +3,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 from lecturelog.domain.enums import TaskStatus
@@ -165,3 +166,32 @@ class WebhookNotifier(ABC):
         """Best-effort пуш платформе о терминальном статусе задачи.
         error_code — машинный код ошибки (rate_limit/bad_input/internal) или None.
         Реализация НЕ должна выбрасывать наружу и НЕ должна блокировать дольше своего таймаута."""
+
+
+@dataclass(frozen=True)
+class CookieStatus:
+    """Метаданные хранимых cookies (без самого содержимого — это секрет)."""
+
+    exists: bool
+    updated_at: datetime | None
+    size: int
+
+
+class CookieStore(ABC):
+    """Порт хранилища YouTube-cookies. Singleton: одна актуальная запись."""
+
+    @abstractmethod
+    async def save(self, content: bytes) -> CookieStatus:
+        """Сохранить (перезаписать) cookies, вернуть актуальный статус."""
+
+    @abstractmethod
+    async def get(self) -> bytes | None:
+        """Вернуть содержимое cookies или None, если не загружены."""
+
+    @abstractmethod
+    async def status(self) -> CookieStatus:
+        """Вернуть метаданные без содержимого."""
+
+    @abstractmethod
+    async def delete(self) -> None:
+        """Удалить cookies (идемпотентно)."""

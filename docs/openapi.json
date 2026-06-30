@@ -81,6 +81,20 @@
         "title": "Body_create_task_api_v1_tasks_post",
         "type": "object"
       },
+      "Body_put_youtube_cookies_api_v1_youtube_cookies_put": {
+        "properties": {
+          "file": {
+            "contentMediaType": "application/octet-stream",
+            "title": "File",
+            "type": "string"
+          }
+        },
+        "required": [
+          "file"
+        ],
+        "title": "Body_put_youtube_cookies_api_v1_youtube_cookies_put",
+        "type": "object"
+      },
       "ByModelEntry": {
         "properties": {
           "calls": {
@@ -102,6 +116,36 @@
           "calls"
         ],
         "title": "ByModelEntry",
+        "type": "object"
+      },
+      "CookieStatusResponse": {
+        "properties": {
+          "exists": {
+            "title": "Exists",
+            "type": "boolean"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          }
+        },
+        "required": [
+          "exists",
+          "size"
+        ],
+        "title": "CookieStatusResponse",
         "type": "object"
       },
       "CreateTaskResponse": {
@@ -946,6 +990,98 @@
         "summary": "Получить presigned PUT для загрузки исходника",
         "tags": [
           "tasks"
+        ]
+      }
+    },
+    "/api/v1/youtube/cookies": {
+      "delete": {
+        "operationId": "delete_youtube_cookies_api_v1_youtube_cookies_delete",
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Удалить YouTube-cookies (вернуться к анонимному режиму)",
+        "tags": [
+          "youtube"
+        ]
+      },
+      "get": {
+        "operationId": "get_youtube_cookies_api_v1_youtube_cookies_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CookieStatusResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Статус YouTube-cookies (без содержимого)",
+        "tags": [
+          "youtube"
+        ]
+      },
+      "put": {
+        "operationId": "put_youtube_cookies_api_v1_youtube_cookies_put",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_put_youtube_cookies_api_v1_youtube_cookies_put"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CookieStatusResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Некорректный формат cookies"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Файл слишком большой"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Загрузить/заменить YouTube-cookies (cookies.txt)",
+        "tags": [
+          "youtube"
         ]
       }
     }
