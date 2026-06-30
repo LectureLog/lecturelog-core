@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel
@@ -65,6 +66,12 @@ class Usage(BaseModel):
     structurize: StageUsage | None = None
     video_slides: StageUsage | None = None
     total: TotalUsage | None = None
+
+
+class CookieStatusResponse(BaseModel):
+    exists: bool
+    updated_at: datetime | None = None
+    size: int
 
 
 class ErrorResponse(BaseModel):

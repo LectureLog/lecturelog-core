@@ -5,7 +5,7 @@ from pathlib import Path
 from fastapi import Request
 
 from lecturelog.application.worker import PipelineWorker
-from lecturelog.domain.ports import Storage, TaskRepository
+from lecturelog.domain.ports import CookieStore, Storage, TaskRepository
 
 
 def get_repository(request: Request) -> TaskRepository:
@@ -32,6 +32,10 @@ def get_presign_expiry(request: Request) -> int:
 
 def get_gemini(request: Request):
     return request.app.state.gemini
+
+
+def get_cookie_store(request: Request) -> CookieStore:
+    return request.app.state.cookie_store
 
 
 def get_video_slides_config(request: Request) -> dict:
