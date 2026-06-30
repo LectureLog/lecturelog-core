@@ -22,4 +22,6 @@ def test_error_code_values():
     # StrEnum: значение сравнимо со строкой.
     assert ErrorCode.INTERNAL == "internal"
     # Все значения (каталог минимален).
-    assert {e.value for e in ErrorCode} == {"rate_limit", "bad_input", "internal", "cookies_invalid"}
+    assert {e.value for e in ErrorCode} == {
+        "rate_limit", "bad_input", "internal", "cookies_invalid"
+    }

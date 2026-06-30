@@ -1,6 +1,6 @@
 import inspect
 
-from lecturelog.domain.ports import CookieStore, CookieStatus
+from lecturelog.domain.ports import CookieStatus, CookieStore
 
 
 def test_cookie_store_is_abstract_with_expected_methods():

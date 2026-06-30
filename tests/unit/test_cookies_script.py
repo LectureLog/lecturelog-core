@@ -2,9 +2,8 @@ import asyncio
 
 import pytest
 
-from lecturelog.domain.ports import CookieStatus, CookieStore
-
 import scripts.cookies as cookies_cli
+from lecturelog.domain.ports import CookieStatus, CookieStore
 
 
 class FakeStore(CookieStore):
