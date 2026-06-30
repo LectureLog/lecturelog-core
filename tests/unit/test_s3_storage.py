@@ -27,7 +27,11 @@ class StubClient:
         return self._url
 
 
-def _storage(public_endpoint=None, client=None):
+def _storage(public_endpoint=None, client=None, presign_client=None):
+    # client — стаб для сетевых операций (internal endpoint);
+    # presign_client — стаб для presigned-ссылок (public endpoint). Если presign_client
+    # не задан, presigned-методы переиспользуют client (как было до разделения фабрик).
+    presign = presign_client if presign_client is not None else client
     return S3Storage(
         internal_endpoint="http://minio:9000",
         public_endpoint=public_endpoint,
@@ -37,6 +41,7 @@ def _storage(public_endpoint=None, client=None):
         region="us-east-1",
         default_expiry=3600,
         client_factory=_ctx(client) if client is not None else None,
+        presign_client_factory=_ctx(presign) if presign is not None else None,
     )
 
 
@@ -47,14 +52,16 @@ def test_presigned_get_without_public_endpoint_returns_none():
 
 
 def test_presigned_get_overrides_and_public_host():
-    client = StubClient(url="http://minio:9000/b/results/x.zip?sig=1")
-    s = _storage(public_endpoint="https://files.example", client=client)
+    # presign-клиент подписывает сразу под public endpoint — хост в URL уже публичный,
+    # пост-подмены нет (она ломала бы SigV4-подпись).
+    client = StubClient(url="https://files.example/b/results/x.zip?sig=1")
+    s = _storage(public_endpoint="https://files.example", presign_client=client)
     url = asyncio.run(
         s.presigned_get("results/x.zip", download_filename="Лекция", content_type="application/zip")
     )
-    assert url.startswith("https://files.example/")  # хост подменён
+    assert url.startswith("https://files.example/")  # подписано под публичный хост
     assert "minio:9000" not in url
-    assert url.endswith("/b/results/x.zip?sig=1")  # path+query сохранены (та же подпись)
+    assert url == "https://files.example/b/results/x.zip?sig=1"  # URL отдаётся как есть
     assert client.captured["op"] == "get_object"
     assert client.captured["Params"]["Bucket"] == "b"
     assert client.captured["Params"]["Key"] == "results/x.zip"
@@ -66,10 +73,11 @@ def test_presigned_get_overrides_and_public_host():
 
 
 def test_presigned_put_uses_public_host():
-    client = StubClient(url="http://minio:9000/b/uploads/abc/lecture.mp3?sig=2")
-    s = _storage(public_endpoint="https://files.example", client=client)
+    # presign-клиент подписывает под public endpoint — URL уже с публичным хостом.
+    client = StubClient(url="https://files.example/b/uploads/abc/lecture.mp3?sig=2")
+    s = _storage(public_endpoint="https://files.example", presign_client=client)
     url = asyncio.run(s.presigned_put("uploads/abc/lecture.mp3"))
-    assert url.startswith("https://files.example/")
+    assert url == "https://files.example/b/uploads/abc/lecture.mp3?sig=2"
     assert "minio:9000" not in url
     assert client.captured["op"] == "put_object"
     assert client.captured["Params"]["Bucket"] == "b"
@@ -90,6 +98,30 @@ def test_presigned_get_with_empty_public_endpoint_returns_none():
 def test_presigned_put_with_empty_public_endpoint_returns_none():
     s = _storage(public_endpoint="", client=StubClient())
     assert asyncio.run(s.presigned_put("uploads/abc/lecture.mp3")) is None
+
+
+def test_presigned_url_is_sigv4_and_public_host():
+    # Без DI-фабрики используется реальный aioboto3-клиент: проверяем, что presigned URL
+    # подписан по SigV4 (AWS4-HMAC-SHA256) под публичным хостом, а не legacy SigV2.
+    s = S3Storage(
+        internal_endpoint="http://lecturelog-core-minio:9000",
+        public_endpoint="https://s3.lecturelog.sarvizza.com",
+        bucket="lectures",
+        access_key="ak",
+        secret_key="sk",
+        region="us-east-1",
+        default_expiry=900,
+    )
+    url = asyncio.run(s.presigned_put("uploads/abc/lecture.mp3"))
+    # SigV4-маркеры присутствуют.
+    assert "X-Amz-Algorithm=AWS4-HMAC-SHA256" in url
+    assert "X-Amz-Credential=" in url
+    assert "X-Amz-Signature=" in url
+    # Legacy SigV2-параметры отсутствуют.
+    assert "AWSAccessKeyId=" not in url
+    # Хост публичный, internal не светится; path-style (bucket в пути).
+    assert url.startswith("https://s3.lecturelog.sarvizza.com/lectures/uploads/abc/lecture.mp3")
+    assert "lecturelog-core-minio" not in url
 
 
 def test_upload_download_roundtrip(tmp_path):
