@@ -8,6 +8,9 @@ from lecturelog.domain.enums import ErrorCode
 # и _is_overload_error: ядро не зависит от типов SDK, классифицирует по тексту).
 _RATE_LIMIT_TOKENS = ("429", "RESOURCE_EXHAUSTED", "503", "UNAVAILABLE")
 
+# Подстроки-сигналы протухших/непринятых YouTube-cookies (текст yt-dlp).
+_COOKIES_INVALID_TOKENS = ("SIGN IN TO CONFIRM", "CONFIRM YOU'RE NOT A BOT")
+
 
 def classify_error(exc: BaseException) -> ErrorCode:
     """Классифицировать исключение пайплайна в машинный код ошибки.
@@ -23,6 +26,9 @@ def classify_error(exc: BaseException) -> ErrorCode:
         return ErrorCode.BAD_INPUT
     # 3) Текстовый сигнал лимита (Gemini оборачивает last_error в RuntimeError).
     message = str(exc).upper()
+    # Сигнал протухших cookies от yt-dlp.
+    if any(token in message for token in _COOKIES_INVALID_TOKENS):
+        return ErrorCode.COOKIES_INVALID
     if any(token in message for token in _RATE_LIMIT_TOKENS):
         return ErrorCode.RATE_LIMIT
     # 4) Дефолт.

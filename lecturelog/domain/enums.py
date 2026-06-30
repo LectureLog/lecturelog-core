@@ -30,3 +30,6 @@ class ErrorCode(StrEnum):
     BAD_INPUT = "bad_input"
     # Всё прочее (дефолт): неклассифицированный внутренний сбой ядра.
     INTERNAL = "internal"
+    # Cookies YouTube протухли/не приняты: yt-dlp требует «Sign in to confirm
+    # you're not a bot». Нужно перезалить cookies через /youtube/cookies.
+    COOKIES_INVALID = "cookies_invalid"
