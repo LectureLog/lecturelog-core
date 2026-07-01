@@ -61,6 +61,7 @@ async def test_download_uses_cookies_and_deno(captured, tmp_path):
     assert captured["cookies_existed"] is True
     assert captured["cookies_content"] == b"COOKIEDATA"
     assert "--js-runtimes" in argv and "deno" in argv
+    assert "--remote-components" in argv and "ejs:github" in argv
     # БЕЗОПАСНОСТЬ: cookies-файл лежит ВНЕ output-директории (не в расшаренном томе).
     cookies_path = Path(argv[argv.index("--cookies") + 1])
     assert out_dir.resolve() not in cookies_path.resolve().parents
@@ -73,6 +74,7 @@ async def test_download_without_cookies_omits_flag(captured, tmp_path):
     argv = captured["argv"]
     assert "--cookies" not in argv
     assert "--js-runtimes" in argv and "deno" in argv
+    assert "--remote-components" in argv and "ejs:github" in argv
 
 
 @pytest.mark.asyncio

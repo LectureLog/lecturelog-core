@@ -98,6 +98,8 @@ class VideoIngestor(MediaIngestor):
             "mp4",
             "--js-runtimes",
             "deno",
+            "--remote-components",
+            "ejs:github",
         ]
         if cookies_path is not None:
             args += ["--cookies", str(cookies_path)]
