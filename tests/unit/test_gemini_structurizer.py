@@ -48,6 +48,59 @@ async def test_v2_uses_evidence_and_does_not_send_slide_to_render(tmp_path, prom
 
 
 @pytest.mark.asyncio
+async def test_v2_anchor_entry_excludes_deck_boilerplate(tmp_path, prompts_dir, monkeypatch):
+    from lecturelog.infrastructure.structurize import gemini_structurizer as module
+
+    captured = []
+    real_anchor = module.anchor_assignment
+
+    def spy(assignment, entry, content):
+        captured.append(entry)
+        return real_anchor(assignment, entry, content)
+
+    monkeypatch.setattr(module, "anchor_assignment", spy)
+    srt = tmp_path / "t.srt"
+    srt.write_text(
+        "1\n00:00:00,000 --> 00:00:10,000\nТеперь разберём бинарное дерево поиска и его вершины.\n",
+        encoding="utf-8",
+    )
+    slide = tmp_path / "slide.png"
+    slide.write_bytes(b"slide")
+    topics_json = json.dumps([{"title": "Деревья", "start": "0:00", "end": "0:10"}])
+    sections_json = json.dumps([{"title": "Поиск", "start": "0:00", "end": "0:10"}])
+    gemini = ScriptedGemini([topics_json, sections_json, "Бинарное дерево поиска.\n\nВершины."])
+    structurizer = _make_structurizer(gemini, prompts_dir)
+    structurizer._document_alignment_mode = "v2"
+    footer = "Курс Алгоритмы 2026"
+    assets = [
+        SlideAsset(
+            num,
+            slide,
+            "document",
+            extracted_text=f"{body}\n{footer}",
+            native_text_quality="good",
+        )
+        for num, body in enumerate(
+            ["Бинарное дерево поиска. Вершины.", "Обход графа в ширину", "Сортировка слиянием"],
+            start=1,
+        )
+    ]
+
+    await structurizer.structurize(
+        srt_path=srt,
+        slide_assets=assets,
+        context=StructurizeContext("audio"),
+        output_dir=tmp_path / "out",
+    )
+
+    assert captured
+    for entry in captured:
+        assert entry is not None
+        assert footer not in entry.visible_text
+        assert footer not in entry.title
+
+
+@pytest.mark.asyncio
 async def test_v2_alignment_failure_falls_back_to_appendix(tmp_path, prompts_dir, monkeypatch):
     srt = tmp_path / "t.srt"
     srt.write_text("1\n00:00:00,000 --> 00:00:10,000\ntext\n", encoding="utf-8")

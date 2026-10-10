@@ -19,7 +19,10 @@ from lecturelog.domain.slides import (
 )
 from lecturelog.infrastructure.llm.llm_client import LlmClient
 from lecturelog.infrastructure.slides.alignment.anchoring import anchor_assignment
-from lecturelog.infrastructure.slides.alignment.catalog import native_text_fallback
+from lecturelog.infrastructure.slides.alignment.catalog import (
+    detect_boilerplate_lines,
+    native_text_fallback,
+)
 from lecturelog.infrastructure.slides.alignment.diagnostics import write_diagnostic
 from lecturelog.infrastructure.slides.alignment.service import (
     AlignmentTuning,
@@ -566,6 +569,8 @@ class GeminiStructurizer(Structurizer):
         if self._document_alignment_mode == "v2":
             placements: list[SlidePlacement] = []
             assets_by_num = {asset.slide_num: asset for asset in slide_assets}
+            # Колонтитулы колоды не различают слайды — как и в каталоге выравнивания.
+            boilerplate = detect_boilerplate_lines(slide_assets)
             flat_sections = [section for topic in result for section in topic.sections]
             for assignment in v2_assignments:
                 if assignment.match_status == "duplicate":
@@ -579,7 +584,9 @@ class GeminiStructurizer(Structurizer):
                         )
                     )
                     continue
-                entry_result = native_text_fallback(assets_by_num[assignment.slide_num])
+                entry_result = native_text_fallback(
+                    assets_by_num[assignment.slide_num], boilerplate=boilerplate
+                )
                 if assignment.global_section_id is not None and assignment.global_section_id < len(
                     flat_sections
                 ):
