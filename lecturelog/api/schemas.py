@@ -99,6 +99,12 @@ class TranscriptFailedError(BaseModel):
     detail: str | None = None
 
 
+class TranscriptGoneError(BaseModel):
+    # 410: {"error": "transcript_unavailable", "detail": <task.error>}.
+    error: str
+    detail: str | None = None
+
+
 class TaskStatusResponse(BaseModel):
     task_id: str
     stage: str | None

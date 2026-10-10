@@ -181,6 +181,14 @@ class S3Config(BaseSettings):
 class WorkerConfig(BaseSettings):
     model_config = _BASE
     max_concurrent_tasks: int = Field(2, alias="MAX_CONCURRENT_TASKS")
+    # TTL-очистка workspace упавших задач (см. docs/plans/2026-07-15-disk-cleanup-design.md).
+    cleanup_enabled: bool = Field(True, alias="WORK_DIR_CLEANUP_ENABLED")
+    failed_retention_hours: float = Field(
+        24, alias="WORK_DIR_FAILED_RETENTION_HOURS", ge=0, le=24 * 3650
+    )
+    sweep_interval_minutes: float = Field(
+        60, alias="WORK_DIR_SWEEP_INTERVAL_MINUTES", gt=0, le=60 * 24 * 365
+    )
 
 
 class MediaConfig(BaseSettings):
