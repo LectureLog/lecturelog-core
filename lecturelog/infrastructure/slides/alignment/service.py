@@ -435,6 +435,7 @@ class DocumentAlignmentService:
                         "unresolved",
                         item.score,
                         f"service_role:{entry.role}",
+                        status_reason="service_role",
                     )
                 )
             else:

@@ -21,6 +21,18 @@ def anchor_assignment(
     entry: SlideCatalogEntry | None,
     markdown: str,
 ) -> tuple[str, SlidePlacement]:
+    if assignment.match_status == "unbound" and assignment.global_section_id is not None:
+        # Непривязанный слайд обсуждали, но место в речи не установлено надёжно:
+        # он стоит в галерее раздела с самым сильным доказательством, а не в
+        # приложении и не внутри абзаца.
+        return markdown, SlidePlacement(
+            assignment.slide_num,
+            "section_gallery",
+            assignment.global_section_id,
+            gallery_position="after_content",
+            anchor_confidence="fallback",
+            fallback_reason=f"unbound:{assignment.status_reason}",
+        )
     if assignment.match_status != "discussed" or assignment.global_section_id is None:
         return markdown, SlidePlacement(
             assignment.slide_num,

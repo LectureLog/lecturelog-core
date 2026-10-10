@@ -65,3 +65,23 @@ def test_progressive_build_is_not_suppressed_as_duplicate() -> None:
         (SlideRelation(2, "progressive_build", "g", 1),),
     )
     assert [item.match_status for item in result] == ["discussed", "discussed"]
+
+
+def test_unbound_slide_goes_to_section_with_strongest_evidence_not_path_choice() -> None:
+    """Сила доказательства = lexical·1.0 + бонус tier (explicit 4, strong 2) + visual·3.0.
+
+    Слайд 2: раздел 1 — strong без цитаты, 3·1 + 2 = 5.0 (путь выбирает его: раздел 0
+    после раздела 1 стоит штрафа возврата 1.5); раздел 0 — explicit,
+    0.5·1 + 4 + 0.5·3 = 6.0. Уверенность выбора unresolved (нет цитаты), значит
+    слайд непривязанный и идёт в раздел 0 — самое сильное доказательство.
+    """
+    anchor = _candidate(1, 1, 20, competition_margin=10.0)
+    path_choice = SlideCandidate(2, 1, (2,), None, 10, 15, 3.0, "strong")
+    strongest = SlideCandidate(2, 0, (1,), None, 0, 5, 0.5, "explicit", visual_score=0.5)
+
+    result = align_sequence([1, 2], {1: (anchor,), 2: (path_choice, strongest)})
+
+    assert result[1].match_status == "unbound"
+    assert result[1].global_section_id == 0
+    assert result[1].status_reason == "weak_evidence"
+    assert result[1].score == 6.0

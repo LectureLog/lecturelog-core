@@ -2,8 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from lecturelog.domain.slides import SlideAssignment, SlideCandidate, SlideRelation
-from lecturelog.infrastructure.slides.alignment.confidence import confidence_from_margin
+from lecturelog.domain.slides import (
+    SlideAssignment,
+    SlideCandidate,
+    SlideRelation,
+    SlideStatusReason,
+)
+from lecturelog.infrastructure.slides.alignment.confidence import calibrate
 
 
 @dataclass(frozen=True)
@@ -58,16 +63,17 @@ def align_sequence(
             )
             continue
         if chosen is None:
+            # Путь пропустил слайд. Если у него всё же есть кандидат с
+            # доказательством, пропуск — цена порядка колоды, а не признак того,
+            # что лектор слайд не обсуждал.
             assignments.append(
-                SlideAssignment(
+                _unbound_or_unmentioned(
                     slide_num,
-                    "unmentioned",
+                    candidates.get(slide_num, ()),
                     None,
-                    (),
+                    "deck_order_conflict",
                     None,
-                    "unresolved",
-                    0.0,
-                    "no_supported_evidence",
+                    weights,
                 )
             )
             continue
@@ -86,34 +92,116 @@ def align_sequence(
             else path_margin
         )
         best_score = _candidate_score(chosen, weights)
-        confidence = confidence_from_margin(
+        calibration = calibrate(
             semantic_tier=chosen.semantic_tier,
             margin=margin,
             has_grounded_evidence=bool(chosen.evidence_block_ids and chosen.evidence_quote),
             has_competing_context=chosen.competition_margin is not None,
             visual_score=chosen.visual_score,
         )
-        status = "discussed" if confidence != "unresolved" else "unmentioned"
+        if calibration.unbound_reason is None:
+            assignments.append(
+                SlideAssignment(
+                    slide_num=slide_num,
+                    match_status="discussed",
+                    global_section_id=chosen.global_section_id,
+                    evidence_block_ids=chosen.evidence_block_ids,
+                    anchor_s=(chosen.anchor_start_s + chosen.anchor_end_s) / 2,
+                    assignment_confidence=calibration.confidence,
+                    score=best_score,
+                    reason_code=_reason_code(chosen, margin),
+                )
+            )
+            continue
         assignments.append(
-            SlideAssignment(
-                slide_num=slide_num,
-                match_status=status,
-                global_section_id=chosen.global_section_id if status == "discussed" else None,
-                evidence_block_ids=chosen.evidence_block_ids if status == "discussed" else (),
-                anchor_s=(chosen.anchor_start_s + chosen.anchor_end_s) / 2
-                if status == "discussed"
-                else None,
-                assignment_confidence=confidence,
-                score=best_score,
-                reason_code=(
-                    f"semantic_{chosen.semantic_tier}"
-                    f":lexical={chosen.lexical_score:.3f}"
-                    f":visual={(chosen.visual_score or 0.0):.3f}"
-                    f":margin={margin:.3f}"
-                ),
+            _unbound_or_unmentioned(
+                slide_num,
+                candidates.get(slide_num, ()),
+                chosen,
+                calibration.unbound_reason,
+                margin,
+                weights,
             )
         )
     return tuple(assignments)
+
+
+def strongest_candidate(
+    pool: tuple[SlideCandidate, ...],
+    weights: AlignmentWeights,
+    *,
+    preferred: SlideCandidate | None = None,
+) -> SlideCandidate | None:
+    """Кандидат с самым сильным доказательством — его раздел получает непривязанный слайд.
+
+    Сила доказательства — та же оценка `_candidate_score`, что и в выборе пути:
+    `lexical_score * lexical_weight + бонус semantic_tier + visual_score * visual_weight`.
+    Порядок колоды в неё не входит: он подсказка для пути, а не свойство
+    доказательства. Доказательством считается только кандидат, который сам по
+    себе сильнее пропуска слайда (`unmatched_score`). При равной силе выигрывает
+    `preferred` (выбор пути), затем более ранний раздел.
+    """
+    evidence = [
+        candidate
+        for candidate in pool
+        if _candidate_score(candidate, weights) > weights.unmatched_score
+    ]
+    if not evidence:
+        return None
+    return max(
+        evidence,
+        key=lambda candidate: (
+            _candidate_score(candidate, weights),
+            candidate is preferred,
+            -candidate.global_section_id,
+        ),
+    )
+
+
+def _unbound_or_unmentioned(
+    slide_num: int,
+    pool: tuple[SlideCandidate, ...],
+    chosen: SlideCandidate | None,
+    unbound_reason: SlideStatusReason,
+    margin: float | None,
+    weights: AlignmentWeights,
+) -> SlideAssignment:
+    """Слайд без уверенной привязки: галерея раздела с сильнейшим доказательством или приложение."""
+    strongest = strongest_candidate(pool, weights, preferred=chosen)
+    if strongest is None:
+        return SlideAssignment(
+            slide_num,
+            "unmentioned",
+            None,
+            (),
+            None,
+            "unresolved",
+            0.0,
+            "no_supported_evidence",
+            status_reason="no_candidates",
+        )
+    return SlideAssignment(
+        slide_num,
+        "unbound",
+        strongest.global_section_id,
+        strongest.evidence_block_ids,
+        # Галерея не привязана к месту речи — якоря нет.
+        None,
+        "unresolved",
+        _candidate_score(strongest, weights),
+        _reason_code(strongest, margin),
+        status_reason=unbound_reason,
+    )
+
+
+def _reason_code(candidate: SlideCandidate, margin: float | None) -> str:
+    # margin=none — путь пропустил слайд, и margin выбора для него не считался.
+    return (
+        f"semantic_{candidate.semantic_tier}"
+        f":lexical={candidate.lexical_score:.3f}"
+        f":visual={(candidate.visual_score or 0.0):.3f}"
+        f":margin={'none' if margin is None else f'{margin:.3f}'}"
+    )
 
 
 def _solve(

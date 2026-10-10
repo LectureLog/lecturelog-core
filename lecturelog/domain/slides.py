@@ -102,16 +102,32 @@ class SlideCandidate:
     competition_margin: float | None = None
 
 
+# Почему слайд не привязан к месту речи (см. GLOSSARY.md):
+# - непривязанный (match_status="unbound") — кандидат с доказательством есть, но
+#   уверенности не хватает: `weak_evidence` — доказательство слабое,
+#   `deck_order_conflict` — путь по порядку колоды пропустил слайд;
+# - неупомянутый (match_status="unmentioned") — `no_candidates` — ни одного
+#   кандидата с доказательством, `service_role` — служебная пустая страница.
+SlideStatusReason = Literal[
+    "weak_evidence",
+    "deck_order_conflict",
+    "no_candidates",
+    "service_role",
+]
+
+
 @dataclass(frozen=True)
 class SlideAssignment:
     slide_num: int
-    match_status: Literal["discussed", "unmentioned", "duplicate", "deck_mismatch"]
+    match_status: Literal["discussed", "unbound", "unmentioned", "duplicate", "deck_mismatch"]
     global_section_id: int | None
     evidence_block_ids: tuple[int, ...]
     anchor_s: float | None
     assignment_confidence: Literal["verified", "probable", "unresolved"]
     score: float
     reason_code: str
+    # Заполнено только у непривязанных и неупомянутых слайдов.
+    status_reason: SlideStatusReason | None = None
 
 
 @dataclass(frozen=True)
