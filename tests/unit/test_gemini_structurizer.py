@@ -814,3 +814,36 @@ async def test_cues_before_first_subtopic_start_are_not_lost(tmp_path, prompts_d
     _, prompts = await _run_subsplit(tmp_path, prompts_dir, srt, sections, ["a"])
 
     assert "вступление" in prompts[0] and "основная" in prompts[0]
+
+
+@pytest.mark.asyncio
+async def test_tail_after_last_subtopic_end_goes_to_last_subtopic_only(tmp_path, prompts_dir):
+    srt = _cues_srt((0, 60, "первая"), (60, 120, "вторая"), (120, 180, "хвост"))
+    sections = [
+        {"title": "А", "start": "00:00:00", "end": "00:01:00"},
+        {"title": "Б", "start": "00:01:00", "end": "00:02:00"},
+    ]
+    topics, prompts = await _run_subsplit(tmp_path, prompts_dir, srt, sections, ["a", "b"])
+
+    assert sum("хвост" in p for p in prompts) == 1 and "хвост" in prompts[1]
+    assert topics[0].sections[1].end == "00:03:00"
+
+
+@pytest.mark.asyncio
+async def test_subtopic_intervals_are_adjacent_for_media_cutting(tmp_path, prompts_dir):
+    """Конец подтемы = начало следующей: пауз между клипами нет, текст всё равно по репликам."""
+    srt = _cues_srt((0, 50, "первая"), (70, 120, "вторая"), (150, 180, "третья"))
+    sections = [
+        {"title": "А", "start": "00:00:00", "end": "00:00:50"},
+        {"title": "Б", "start": "00:01:10", "end": "00:02:00"},
+        {"title": "В", "start": "00:02:30", "end": "00:03:00"},
+    ]
+    topics, prompts = await _run_subsplit(tmp_path, prompts_dir, srt, sections, ["a", "b", "c"])
+
+    secs = topics[0].sections
+    assert [(s.start, s.end) for s in secs] == [
+        ("00:00:00", "00:01:10"),
+        ("00:01:10", "00:02:30"),
+        ("00:02:30", "00:03:00"),
+    ]
+    assert "вторая" in prompts[1] and "вторая" not in prompts[0]

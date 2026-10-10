@@ -137,8 +137,12 @@ def _snap_sections_to_cues(
         # Первая подтема забирает всё с начала транскрипта: реплика не может
         # остаться вне подтем только потому, что модель начала не с неё.
         firsts.append(max(index, firsts[-1]) if firsts else 0)
-    # Конец последней подтемы реплику не режет: задетая реплика остаётся в ней.
-    stop = max(bisect_left(starts, parse_srt_time(str(flat[-1]["end"]))), firsts[-1])
+    # Хвост после конца последней подтемы достаётся ей же, симметрично началу.
+    # Если подтемы целиком лежат до первой реплики, их разметка не относится к
+    # транскрипту — оставляем таймкоды как есть.
+    if bisect_left(starts, parse_srt_time(str(flat[-1]["end"]))) == 0:
+        return None
+    stop = len(blocks)
     edges = [*firsts[1:], stop]
 
     kept = [i for i, (first, edge) in enumerate(zip(firsts, edges, strict=True)) if first < edge]
@@ -155,15 +159,15 @@ def _snap_sections_to_cues(
         section = flat[i]
         covered = blocks[firsts[i] : edges[i]]
         start_s = covered[0].start_s
-        end_s = max(block.end_s for block in covered)
         if position + 1 < len(kept):
-            # Вложенная длинная реплика не должна тянуть конец за начало следующей.
-            next_start = blocks[firsts[kept[position + 1]]].start_s
-            if next_start > start_s:
-                end_s = min(end_s, next_start)
+            # Интервалы для медиа-нарезки смежные: конец = начало следующей подтемы,
+            # без пауз вне клипов. Текст при этом режется по репликам (cue_range).
+            end_s = blocks[firsts[kept[position + 1]]].start_s
+        else:
+            end_s = max(block.end_s for block in covered)
         # Секции режут медиа по ЧЧ:ММ:СС: после усечения до секунд конец обязан быть
-        # строго позже начала (иначе пустой клип), а концы не убывают (вложенная
-        # длинная реплика иначе даёт следующей подтеме конец раньше предыдущей).
+        # строго позже начала (иначе пустой клип; только для подтем короче секунды
+        # конец заходит на соседа), а концы строго возрастают (требование v2).
         end_s = max(end_s, float(int(start_s) + 1), previous_end + 0.001)
         previous_end = end_s
         section["start"] = format_srt_seconds(start_s)
