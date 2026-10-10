@@ -105,7 +105,14 @@ def _snap_sections_to_cues(
     возвращает None (работаем по таймкодам, как раньше).
     """
 
-    flat = [section for sections in topics_sections for section in sections]
+    # Модель может вернуть подтемы не по порядку времени: упорядочиваем внутри темы,
+    # иначе монотонизация границ схлопнет подтемы и потеряет их реплики.
+    # Работаем с копией порядка: при возврате None исходный порядок не трогаем.
+    ordered = [
+        sorted(sections, key=lambda section: parse_srt_time(str(section["start"])))
+        for sections in topics_sections
+    ]
+    flat = [section for sections in ordered for section in sections]
     blocks = sorted(parse_srt_blocks(srt_content), key=lambda block: block.start_s)
     if not flat or not blocks:
         return None
@@ -138,16 +145,30 @@ def _snap_sections_to_cues(
     if not kept:
         return None
 
+    for sections, original in zip(ordered, topics_sections, strict=True):
+        original[:] = sections
+
     ranges: list[tuple[int, int]] = []
     kept_set = set(kept)
-    for i in kept:
+    previous_end = 0.0
+    for position, i in enumerate(kept):
         section = flat[i]
         covered = blocks[firsts[i] : edges[i]]
-        section["start"] = format_srt_seconds(covered[0].start_s)
-        section["end"] = format_srt_seconds(
-            max(max(block.end_s for block in covered), covered[0].start_s + 0.001)
-        )
-        ranges.append((covered[0].block_id, covered[-1].block_id))
+        start_s = covered[0].start_s
+        end_s = max(block.end_s for block in covered)
+        if position + 1 < len(kept):
+            # Вложенная длинная реплика не должна тянуть конец за начало следующей.
+            next_start = blocks[firsts[kept[position + 1]]].start_s
+            if next_start > start_s:
+                end_s = min(end_s, next_start)
+        # Секции режут медиа по ЧЧ:ММ:СС: после усечения до секунд конец обязан быть
+        # строго позже начала (иначе пустой клип), а концы не убывают (вложенная
+        # длинная реплика иначе даёт следующей подтеме конец раньше предыдущей).
+        end_s = max(end_s, float(int(start_s) + 1), previous_end + 0.001)
+        previous_end = end_s
+        section["start"] = format_srt_seconds(start_s)
+        section["end"] = format_srt_seconds(end_s)
+        ranges.append((firsts[i] + 1, edges[i]))
     if len(kept) < len(flat):
         logger.warning(
             "после сдвига к границам реплик удалено подтем без реплик: %d",

@@ -83,18 +83,21 @@ def extract_srt_fragment(srt: str, start: str, end: str) -> str:
     return "\n\n".join(result)
 
 
-def extract_srt_cue_range(srt: str, first_id: int, last_id: int) -> str:
-    """Вырезает реплики с номерами first_id..last_id включительно (нумерация parse_srt_blocks).
+def extract_srt_cue_range(srt: str, first: int, last: int) -> str:
+    """Вырезает реплики с позициями first..last включительно (с 1, в порядке начала).
 
+    Позиция — номер в списке реплик, отсортированном по времени начала (стабильно),
+    как его видит нарезка подтем; номера из файла и порядок записи не важны.
     В отличие от extract_srt_fragment не зависит от таймкодов: соседние реплики
     с совпадающими границами не попадают сразу в два фрагмента.
     """
+    blocks = sorted(parse_srt_blocks(srt), key=lambda block: block.start_s)
     return "\n\n".join(
         f"{block.block_id}\n"
         f"{format_srt_seconds(block.start_s)} --> {format_srt_seconds(block.end_s)}\n"
         f"{block.text}"
-        for block in parse_srt_blocks(srt)
-        if first_id <= block.block_id <= last_id
+        for position, block in enumerate(blocks, start=1)
+        if first <= position <= last
     )
 
 
