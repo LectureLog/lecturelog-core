@@ -158,3 +158,54 @@ async def test_weak_evidence_slide_goes_to_gallery_of_its_section(tmp_path):
     assert placement.global_section_id == 1
     assert placement.anchor_confidence == "fallback"
     assert placement.fallback_reason == "unbound:weak_evidence"
+
+
+@pytest.mark.asyncio
+async def test_slide_skipped_by_deck_order_goes_to_gallery_of_its_section(tmp_path):
+    """Лектор вернулся к слайду 2 после слайда 1 из последнего раздела.
+
+    Путь по порядку колоды выгоднее пропускает слайд 2, чем возвращается на
+    пять разделов назад. Но у слайда есть кандидат с доказательством — значит,
+    он непривязанный и стоит в галерее раздела 0, а не в приложении.
+    """
+    srt = _srt(
+        "Вспомним про жизненный цикл программы.",
+        "Пауза.",
+        "Пауза.",
+        "Пауза.",
+        "Пауза.",
+        "Подробно разбираем спиральную модель Боэма, витки спиральной модели и риски.",
+    )
+    service = DocumentAlignmentService()
+
+    result = await service.align(
+        assets=[
+            SlideAsset(
+                1,
+                _image(tmp_path, "spiral.png"),
+                "document",
+                extracted_text="Спиральная модель Боэма\nВитки спиральной модели и риски",
+                native_text_quality="good",
+            ),
+            SlideAsset(
+                2,
+                _image(tmp_path, "cycle.png"),
+                "document",
+                extracted_text="Жизненный цикл программы",
+                native_text_quality="good",
+            ),
+        ],
+        section_layout=_layout(6),
+        srt_content=srt,
+    )
+    spiral, cycle = result.assignments
+
+    assert spiral.match_status == "discussed"
+    assert spiral.global_section_id == 5
+    assert cycle.match_status == "unbound"
+    assert cycle.global_section_id == 0
+    assert cycle.status_reason == "deck_order_conflict"
+
+    _, placement = anchor_assignment(cycle, result.catalog[2], "Вспомним про жизненный цикл.")
+    assert placement.output_kind == "section_gallery"
+    assert placement.global_section_id == 0

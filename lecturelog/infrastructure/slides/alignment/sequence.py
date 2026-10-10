@@ -63,16 +63,17 @@ def align_sequence(
             )
             continue
         if chosen is None:
+            # Путь пропустил слайд. Если у него всё же есть кандидат с
+            # доказательством, пропуск — цена порядка колоды, а не признак того,
+            # что лектор слайд не обсуждал.
             assignments.append(
-                SlideAssignment(
+                _unbound_or_unmentioned(
                     slide_num,
-                    "unmentioned",
+                    candidates.get(slide_num, ()),
                     None,
-                    (),
+                    "deck_order_conflict",
                     None,
-                    "unresolved",
-                    0.0,
-                    "no_supported_evidence",
+                    weights,
                 )
             )
             continue
@@ -98,7 +99,6 @@ def align_sequence(
             has_competing_context=chosen.competition_margin is not None,
             visual_score=chosen.visual_score,
         )
-        reason_code = _reason_code(chosen, margin)
         if calibration.unbound_reason is None:
             assignments.append(
                 SlideAssignment(
@@ -109,7 +109,7 @@ def align_sequence(
                     anchor_s=(chosen.anchor_start_s + chosen.anchor_end_s) / 2,
                     assignment_confidence=calibration.confidence,
                     score=best_score,
-                    reason_code=reason_code,
+                    reason_code=_reason_code(chosen, margin),
                 )
             )
             continue
@@ -119,7 +119,7 @@ def align_sequence(
                 candidates.get(slide_num, ()),
                 chosen,
                 calibration.unbound_reason,
-                reason_code,
+                margin,
                 weights,
             )
         )
@@ -163,7 +163,7 @@ def _unbound_or_unmentioned(
     pool: tuple[SlideCandidate, ...],
     chosen: SlideCandidate | None,
     unbound_reason: SlideStatusReason,
-    reason_code: str,
+    margin: float | None,
     weights: AlignmentWeights,
 ) -> SlideAssignment:
     """Слайд без уверенной привязки: галерея раздела с самым сильным доказательством или приложение."""
@@ -189,17 +189,18 @@ def _unbound_or_unmentioned(
         None,
         "unresolved",
         _candidate_score(strongest, weights),
-        reason_code,
+        _reason_code(strongest, margin),
         status_reason=unbound_reason,
     )
 
 
-def _reason_code(candidate: SlideCandidate, margin: float) -> str:
+def _reason_code(candidate: SlideCandidate, margin: float | None) -> str:
+    # margin=none — путь пропустил слайд, и margin выбора для него не считался.
     return (
         f"semantic_{candidate.semantic_tier}"
         f":lexical={candidate.lexical_score:.3f}"
         f":visual={(candidate.visual_score or 0.0):.3f}"
-        f":margin={margin:.3f}"
+        f":margin={'none' if margin is None else f'{margin:.3f}'}"
     )
 
 
