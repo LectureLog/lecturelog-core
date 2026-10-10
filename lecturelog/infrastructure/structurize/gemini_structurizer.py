@@ -222,6 +222,31 @@ def _slide_context_block(entries: list[SlideCatalogEntry]) -> str:
     )
 
 
+def _section_spelling_slides(
+    assignments: tuple[SlideAssignment, ...],
+    catalog: dict[int, SlideCatalogEntry],
+) -> dict[int, list[int]]:
+    """Номера страниц колоды для справочника написаний каждого раздела.
+
+    Справочник со всей колоды подставлял в раздел имена с чужих слайдов
+    («Уолли» вместо Alice, «JetBrains» вместо ЯДРО). Поэтому раздел получает
+    только слайды, привязанные к нему по выравниванию (и inline, и галерея
+    раздела — у обоих задан раздел), плюс соседние по номеру страницы (±1):
+    слайд с искажённым ASR термином часто не привязывается сам, но лектор
+    обычно показывает его рядом с привязанным. Раздел без привязанных слайдов
+    получает пустой справочник.
+    """
+    bound: dict[int, set[int]] = {}
+    for assignment in assignments:
+        if assignment.global_section_id is None:
+            continue
+        pages = bound.setdefault(assignment.global_section_id, set())
+        for num in (assignment.slide_num - 1, assignment.slide_num, assignment.slide_num + 1):
+            if num in catalog:
+                pages.add(num)
+    return {section_id: sorted(pages) for section_id, pages in bound.items()}
+
+
 async def _emit_progress(on_progress: ProgressCallback | None, value: int) -> None:
     if on_progress is None:
         return
@@ -396,9 +421,11 @@ class GeminiStructurizer(Structurizer):
         else:
             fragment = extract_srt_fragment(srt_content, start, end)
         prompt = section_prompt_template.format(title=title, start=start, end=end)
+        prompt = f"{prompt}\n{fragment}"
+        # Справочник идёт после SRT: шаблон кончается заголовком транскрипта, и
+        # блок между ним и репликами модель прочла бы как речь лектора.
         if slide_context:
             prompt = f"{prompt}\n{slide_context}"
-        prompt = f"{prompt}\n{fragment}"
 
         related_images = [
             slide_bytes[idx - 1] for idx in slide_indices if 1 <= idx <= len(slide_bytes)
@@ -598,10 +625,7 @@ class GeminiStructurizer(Structurizer):
         section_prompt_template = self._read_prompt("section_v1.md")
         render_sem = asyncio.Semaphore(self._concurrency_render)
 
-        # Написания берём со всей колоды, а не только с привязанных слайдов:
-        # слайд теряется как раз тогда, когда ASR исказил его термин, и без него
-        # подсказка не дойдёт именно туда, где нужна (ENIAC → «Мониак»).
-        slide_context = _slide_context_block([v2_catalog[num] for num in sorted(v2_catalog)])
+        section_spelling_slides = _section_spelling_slides(v2_assignments, v2_catalog)
 
         render_tasks = []
         global_idx = 0
@@ -622,7 +646,12 @@ class GeminiStructurizer(Structurizer):
                             slide_bytes=slide_bytes
                             if self._document_alignment_mode != "v2"
                             else [],
-                            slide_context=slide_context,
+                            slide_context=_slide_context_block(
+                                [
+                                    v2_catalog[num]
+                                    for num in section_spelling_slides.get(global_idx, ())
+                                ]
+                            ),
                             semaphore=render_sem,
                             on_usage=on_usage,
                             cue_range=cue_ranges[global_idx] if cue_ranges else None,
