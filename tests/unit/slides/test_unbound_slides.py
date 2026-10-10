@@ -209,3 +209,47 @@ async def test_slide_skipped_by_deck_order_goes_to_gallery_of_its_section(tmp_pa
     _, placement = anchor_assignment(cycle, result.catalog[2], "Вспомним про жизненный цикл.")
     assert placement.output_kind == "section_gallery"
     assert placement.global_section_id == 0
+
+
+@pytest.mark.asyncio
+async def test_slide_without_candidates_and_blank_page_stay_in_appendix(tmp_path):
+    """Неупомянутые слайды по-прежнему в приложении, с различимой причиной."""
+    llm = ScriptedLlm(
+        [
+            # Каталог идёт пачками по два слайда.
+            _catalog_response(
+                {
+                    "slide_num": 1,
+                    "title": "Квантовая хромодинамика",
+                    "visible_text": "Глюоны и кварки",
+                },
+                _COURSE_SLIDE,
+            ),
+            _catalog_response({"slide_num": 3, "role": "blank"}),
+            # Судья не нашёл слайду 1 доказательства ни в одном разделе.
+            _semantic(1, 0, [], "", "none"),
+            _COURSE_VERDICT,
+        ]
+    )
+    service = DocumentAlignmentService(llm=llm, models=["m"], prompts_dir=_prompts(tmp_path))
+
+    result = await service.align(
+        assets=_assets(tmp_path, 3),
+        section_layout=_layout(2),
+        srt_content=_srt(
+            "Сегодня говорим про организацию курса.",
+            "Разберём бинарное дерево поиска и его вершины.",
+        ),
+    )
+    unrelated, course, blank = result.assignments
+
+    assert course.match_status == "discussed"
+    assert course.status_reason is None
+    assert (unrelated.match_status, unrelated.status_reason) == ("unmentioned", "no_candidates")
+    assert (blank.match_status, blank.status_reason) == ("unmentioned", "service_role")
+    for assignment in (unrelated, blank):
+        _, placement = anchor_assignment(
+            assignment, result.catalog[assignment.slide_num], "Любой текст раздела."
+        )
+        assert placement.output_kind == "appendix"
+        assert placement.global_section_id is None
