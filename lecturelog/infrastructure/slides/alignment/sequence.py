@@ -79,19 +79,18 @@ def align_sequence(
             # доказательством, пропуск — цена порядка колоды, а не признак того,
             # что лектор слайд не обсуждал.
             pool = candidates.get(slide_num, ())
-            reason: SlideStatusReason = "deck_order_conflict"
             weak = [
                 c
                 for c in pool
                 if c.competition_margin is not None and c.competition_margin < weights.min_margin
             ]
-            if weak:
-                # Конкурент сильнее выбора судьи — это более информативная причина,
-                # чем конфликт порядка, и его раздел должен участвовать в выборе галереи.
-                reason = "stronger_competitor"
-                pool = (*pool, *(rival for c in weak for rival in c.competitors))
+            # Конкурент сильнее выбора судьи — более информативная причина, чем
+            # конфликт порядка, и его раздел должен участвовать в выборе галереи.
+            reason: SlideStatusReason = "stronger_competitor" if weak else "deck_order_conflict"
             assignments.append(
-                _unbound_or_unmentioned(slide_num, pool, None, reason, None, weights)
+                _unbound_or_unmentioned(
+                    slide_num, _gallery_pool(pool, weak), None, reason, None, weights
+                )
             )
             continue
         constrained_total, _ = _solve(
@@ -135,9 +134,7 @@ def align_sequence(
             continue
         pool = candidates.get(slide_num, ())
         if calibration.unbound_reason == "stronger_competitor":
-            # Конкуренты в выбор пути не входят, но галерея должна достаться
-            # разделу с самым сильным доказательством — возможно, конкуренту.
-            pool = (*pool, *chosen.competitors)
+            pool = _gallery_pool(pool, [chosen])
         assignments.append(
             _unbound_or_unmentioned(
                 slide_num,
@@ -149,6 +146,17 @@ def align_sequence(
             )
         )
     return tuple(assignments)
+
+
+def _gallery_pool(
+    pool: tuple[SlideCandidate, ...], losing: list[SlideCandidate]
+) -> tuple[SlideCandidate, ...]:
+    """Пул для выбора галереи: кандидаты слайда плюс конкуренты тех, кто им уступил.
+
+    Конкуренты в выбор пути не входят, но галерея должна достаться разделу с
+    самым сильным доказательством — возможно, конкуренту.
+    """
+    return (*pool, *(rival for candidate in losing for rival in candidate.competitors))
 
 
 def strongest_candidate(
@@ -202,7 +210,7 @@ def _unbound_or_unmentioned(
             None,
             "unresolved",
             0.0,
-            "no_supported_evidence",
+            "no_candidates",
             status_reason="no_candidates",
         )
     return SlideAssignment(
