@@ -33,9 +33,14 @@ def utc_now() -> datetime:
     return datetime.now(UTC)
 
 
+def _is_task_id(name: str) -> bool:
+    """Имя - task_id (32 hex): единственная проверка для cleanup воркера и sweeper."""
+    return _TASK_ID_RE.fullmatch(name) is not None
+
+
 def _safe_task_dir(path: Path, work_root: Path) -> bool:
     """Каталог задачи: имя - task_id, не symlink, прямой потомок work_root."""
-    if not _TASK_ID_RE.fullmatch(path.name) or path.is_symlink():
+    if not _is_task_id(path.name) or path.is_symlink():
         return False
     return path.resolve().parent == work_root.resolve()
 
@@ -169,7 +174,7 @@ class PipelineWorker:
         """Best-effort удалить scratch только после подтверждённого S3-результата."""
         if result_path != f"results/{job.task_id}/":
             return
-        if not _TASK_ID_RE.fullmatch(job.task_id) or job.work_dir.name != job.task_id:
+        if not _is_task_id(job.task_id) or job.work_dir.name != job.task_id:
             logger.error(
                 "Воркер: небезопасный work_dir для cleanup task=%s path=%s",
                 job.task_id,
