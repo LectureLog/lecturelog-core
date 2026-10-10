@@ -310,9 +310,11 @@ class GeminiStructurizer(Structurizer):
 
         fragment = extract_srt_fragment(srt_content, start, end)
         prompt = section_prompt_template.format(title=title, start=start, end=end)
+        prompt = f"{prompt}\n{fragment}"
+        # Справочник идёт после SRT: шаблон кончается заголовком транскрипта, и
+        # блок между ним и репликами модель прочла бы как речь лектора.
         if slide_context:
             prompt = f"{prompt}\n{slide_context}"
-        prompt = f"{prompt}\n{fragment}"
 
         related_images = [
             slide_bytes[idx - 1] for idx in slide_indices if 1 <= idx <= len(slide_bytes)
