@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 import os
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -72,9 +73,16 @@ class CachingTranscriber(Transcriber):
             if not text.strip():
                 return
             entry.mkdir(parents=True, exist_ok=True)
-            tmp = entry / ".transcript.srt.tmp"
-            tmp.write_text(text, encoding="utf-8")
-            tmp.replace(entry / "transcript.srt")
+            # Уникальный tmp: две задачи с одним ключом не пишут в один файл.
+            fd, tmp_name = tempfile.mkstemp(dir=entry, prefix=".transcript.", suffix=".tmp")
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as tmp_file:
+                    tmp_file.write(text)
+                os.replace(tmp_name, entry / "transcript.srt")
+            except BaseException:
+                with contextlib.suppress(OSError):
+                    os.unlink(tmp_name)
+                raise
         except (OSError, UnicodeDecodeError) as exc:
             logger.warning("Кеш транскриптов: запись %s не сохранена: %s", entry.name, exc)
 
