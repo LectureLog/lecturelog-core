@@ -19,7 +19,7 @@ def catalog_batches(
     assets: list[SlideAsset], max_batch: int = MAX_CATALOG_BATCH
 ) -> list[list[SlideAsset]]:
     if not 1 <= max_batch <= MAX_CATALOG_BATCH:
-        raise ValueError("catalog batch должен содержать 1..6 страниц")
+        raise ValueError(f"catalog batch должен содержать 1..{MAX_CATALOG_BATCH} страниц")
     return [assets[pos : pos + max_batch] for pos in range(0, len(assets), max_batch)]
 
 

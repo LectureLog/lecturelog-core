@@ -73,11 +73,3 @@ class SemanticMatchResponse(BaseModel):
         ):
             raise ValueError("explicit match требует evidence IDs и цитату")
         return self
-
-
-class AnchorResponse(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    slide_num: int = Field(ge=1)
-    block_index: int = Field(ge=0)
-    side: Literal["before", "after"]

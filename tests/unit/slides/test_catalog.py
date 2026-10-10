@@ -5,6 +5,7 @@ import pytest
 
 from lecturelog.domain.slides import SlideAsset
 from lecturelog.infrastructure.slides.alignment.catalog import (
+    MAX_CATALOG_BATCH,
     catalog_batches,
     detect_boilerplate_lines,
     native_text_fallback,
@@ -26,6 +27,11 @@ def test_catalog_batches_are_bounded_and_ordered() -> None:
     batches = catalog_batches([_asset(number) for number in range(1, 15)])
     assert [len(batch) for batch in batches] == [2, 2, 2, 2, 2, 2, 2]
     assert [item.slide_num for batch in batches for item in batch] == list(range(1, 15))
+
+
+def test_catalog_batch_error_names_actual_maximum() -> None:
+    with pytest.raises(ValueError, match=rf"1\.\.{MAX_CATALOG_BATCH} страниц"):
+        catalog_batches([_asset(1)], max_batch=MAX_CATALOG_BATCH + 1)
 
 
 def test_catalog_rejects_shuffled_or_extra_response() -> None:
