@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from functools import cached_property, lru_cache
+from pathlib import Path
 from typing import Literal
 from urllib.parse import urlsplit
 
@@ -24,6 +25,9 @@ class TranscribeConfig(BaseSettings):
     deepgram_language: str = Field("ru", alias="DEEPGRAM_LANGUAGE")
     deepgram_detect_language: bool = Field(False, alias="DEEPGRAM_DETECT_LANGUAGE")
     deepgram_utt_split: float = Field(0.8, alias="DEEPGRAM_UTT_SPLIT", gt=0)
+    # Кеш транскриптов для перезапуска без повторной оплаты STT. Пусто — каталог
+    # transcript_cache внутри WORK_DIR (вне workspace отдельных задач).
+    cache_dir: Path | None = Field(None, alias="TRANSCRIPT_CACHE_DIR")
 
     @model_validator(mode="after")
     def validate_provider(self) -> TranscribeConfig:
