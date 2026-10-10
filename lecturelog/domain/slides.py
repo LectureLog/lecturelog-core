@@ -104,6 +104,9 @@ class SlideCandidate:
     # competition_margin. В выбор пути не входят: нужны, чтобы непривязанный
     # из-за более сильного конкурента слайд ушёл в галерею этого конкурента.
     competitors: tuple[SlideCandidate, ...] = ()
+    # Вердикт выдал судья-модель (а не лексический путь или восстановление после
+    # отказа судьи). Только такой кандидат может стать verified.
+    model_confirmed: bool = False
 
 
 # Почему слайд не привязан к месту речи (см. GLOSSARY.md):
@@ -135,6 +138,9 @@ class SlideAssignment:
     reason_code: str
     # Заполнено только у непривязанных и неупомянутых слайдов.
     status_reason: SlideStatusReason | None = None
+    # Вклад описания картинки в силу доказательства (visual_score · visual_weight);
+    # None — у кандидата нет визуальной оценки или кандидата нет вовсе.
+    visual_contribution: float | None = None
 
 
 @dataclass(frozen=True)

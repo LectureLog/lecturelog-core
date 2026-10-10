@@ -158,6 +158,7 @@ class DocumentAlignmentService:
                 blocks,
                 limit=self._tuning.candidate_limit,
                 neighbor_radius=self._tuning.neighbor_radius,
+                visual_weight=self._tuning.weights.visual_weight,
             )
             candidates[asset.slide_num] = await self._verify(
                 entry,
@@ -269,7 +270,7 @@ class DocumentAlignmentService:
         if not candidates:
             return ()
         if self._llm is None or not self._models or not catalog_verified:
-            grounded = self._lexical_ground(entry, candidates, blocks)
+            grounded = self._lexical_ground(entry, candidates, blocks, self._visual_weight)
             return (grounded,) if grounded else ()
         payload = {
             "slide": {
@@ -279,6 +280,9 @@ class DocumentAlignmentService:
                 "source_concepts": entry.source_concepts,
                 "transcript_language_terms": entry.transcript_language_terms,
                 "formulas": entry.formulas,
+                # Описание картинки уже оплачено каталогом: для схемы без текста
+                # это единственное содержание страницы, которое видит судья.
+                "visual_summary": entry.visual_summary,
             },
             "candidates": [
                 {
@@ -342,9 +346,9 @@ class DocumentAlignmentService:
                     and second.global_section_id == first_verdict.global_section_id
                     and _tier_at_least(second.semantic_tier, "strong")
                 ):
-                    return (self._with_competition(second, candidates),)
+                    return (self._with_competition(second, candidates, self._visual_weight),)
                 return self._global_recovery(entry, sections, blocks)
-            return (self._with_competition(first, candidates),)
+            return (self._with_competition(first, candidates, self._visual_weight),)
         except Exception as error:
             logger.warning(
                 "semantic verification failed closed for slide %d: %s",
@@ -353,13 +357,17 @@ class DocumentAlignmentService:
             )
             return self._global_recovery(entry, sections, blocks)
 
+    @property
+    def _visual_weight(self) -> float:
+        return self._tuning.weights.visual_weight
+
     @staticmethod
-    def _lexical_ground(entry, candidates, blocks) -> SlideCandidate | None:
+    def _lexical_ground(entry, candidates, blocks, visual_weight: float) -> SlideCandidate | None:
         # Backwards-compatible, deterministic path for tests/offline operation.
         by_id = {block.block_id: block for block in blocks}
         matches = []
         for candidate in candidates:
-            if candidate.lexical_score <= 1.0:
+            if _evidence_strength(candidate, visual_weight) <= 1.0:
                 continue
             for block_id in candidate.evidence_block_ids:
                 block = by_id[block_id]
@@ -390,16 +398,19 @@ class DocumentAlignmentService:
                 "strong",
                 candidate.visual_score,
             )
-            return DocumentAlignmentService._with_competition(grounded, candidates)
+            return DocumentAlignmentService._with_competition(grounded, candidates, visual_weight)
         return None
 
     @staticmethod
-    def _with_competition(candidate, candidates):
+    def _with_competition(candidate, candidates, visual_weight: float):
         competitors = tuple(
             item for item in candidates if item.global_section_id != candidate.global_section_id
         )
+        # Отрыв считается по силе совпадения с речью — лексика плюс описание
+        # картинки, — без бонуса вердикта: у конкурентов судьи не было.
         margin = (
-            candidate.lexical_score - max(item.lexical_score for item in competitors)
+            _evidence_strength(candidate, visual_weight)
+            - max(_evidence_strength(item, visual_weight) for item in competitors)
             if competitors
             else None
         )
@@ -412,8 +423,9 @@ class DocumentAlignmentService:
             blocks,
             limit=len(sections),
             neighbor_radius=0,
+            visual_weight=self._visual_weight,
         )
-        recovered = self._lexical_ground(entry, recovered_pool, blocks)
+        recovered = self._lexical_ground(entry, recovered_pool, blocks, self._visual_weight)
         if recovered is None:
             return ()
         # Тот же потолок, что и у `_lexical_ground`: без участия модели вердикт
@@ -523,6 +535,11 @@ class DocumentAlignmentService:
         if not refs:
             raise ValueError("section timeline is empty")
         return tuple(refs)
+
+
+def _evidence_strength(candidate: SlideCandidate, visual_weight: float) -> float:
+    """Совпадение кандидата с речью без вердикта судьи: лексика и описание картинки."""
+    return candidate.lexical_score + (candidate.visual_score or 0.0) * visual_weight
 
 
 def _is_supported_image(path: Path) -> bool:

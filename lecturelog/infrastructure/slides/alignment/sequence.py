@@ -19,6 +19,11 @@ class AlignmentWeights:
     explicit_bonus: float = 4.0
     strong_bonus: float = 2.0
     lexical_weight: float = 1.0
+    # Вес визуальной оценки (0..1, совпадение описания картинки с речью раздела).
+    # Полное совпадение даёт +3: больше подтверждения strong (+2) — описание
+    # покрыто речью целиком, — но меньше explicit (+4): цитату судьи оно не
+    # заменяет. И строго меньше |min_margin|: одно описание не может само
+    # перевести слайд в `stronger_competitor`. Калибруется по базовой линии этапа.
     visual_weight: float = 3.0
     progressive_same_section_bonus: float = 0.75
     # Порог margin выбора: ниже него слайд непривязанный с причиной
@@ -111,6 +116,7 @@ def align_sequence(
             has_competing_context=chosen.competition_margin is not None,
             visual_score=chosen.visual_score,
             min_margin=weights.min_margin,
+            model_confirmed=chosen.model_confirmed,
         )
         if calibration.unbound_reason is None:
             assignments.append(
@@ -123,6 +129,7 @@ def align_sequence(
                     assignment_confidence=calibration.confidence,
                     score=best_score,
                     reason_code=_reason_code(chosen, margin),
+                    visual_contribution=_visual_contribution(chosen, weights),
                 )
             )
             continue
@@ -209,6 +216,7 @@ def _unbound_or_unmentioned(
         _candidate_score(strongest, weights),
         _unbound_reason_code(strongest, chosen, margin),
         status_reason=unbound_reason,
+        visual_contribution=_visual_contribution(strongest, weights),
     )
 
 
@@ -228,6 +236,13 @@ def _unbound_reason_code(
         f":path_section={chosen.global_section_id}"
         f":path_min_margin={'none' if margin is None else f'{margin:.3f}'}"
     )
+
+
+def _visual_contribution(candidate: SlideCandidate, weights: AlignmentWeights) -> float | None:
+    """Вклад описания картинки в силу доказательства — для диагностики."""
+    if candidate.visual_score is None:
+        return None
+    return candidate.visual_score * weights.visual_weight
 
 
 def _reason_code(candidate: SlideCandidate, margin: float | None) -> str:

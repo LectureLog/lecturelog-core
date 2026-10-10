@@ -6,6 +6,61 @@ from lecturelog.domain.slides import SlideCatalogEntry
 
 _TOKEN_RE = re.compile(r"[\w+-]{3,}", re.UNICODE)
 _SPACE_RE = re.compile(r"\s+")
+# Слова, которыми описывают любую картинку, а не её содержание («на слайде
+# изображена схема»). Они звучат и в речи, и в конспекте где угодно, поэтому ни
+# поиск кандидатов, ни grounding не засчитывают их как совпадение с описанием.
+# Сравнение по началу слова — так покрываются словоформы.
+_VISUAL_FILLER_PREFIXES: tuple[str, ...] = (
+    "слайд",
+    "схем",
+    "диаграм",
+    "изображ",
+    "рисун",
+    "картин",
+    "иллюстр",
+    "фотограф",
+    "страниц",
+    "показ",
+    "представл",
+    "видн",
+    "виден",
+    "расположен",
+    "содерж",
+    "элемент",
+    "текст",
+    "надпис",
+    "заголов",
+    "фон",
+    "цвет",
+    "slide",
+    "diagram",
+    "image",
+    "picture",
+    "figure",
+    "shows",
+    "show",
+)
+
+
+def is_visual_filler(token: str) -> bool:
+    """Слово описания картинки, не говорящее о её содержании."""
+    folded = token.casefold()
+    return folded.startswith(_VISUAL_FILLER_PREFIXES)
+
+
+def visual_claims(entry: SlideCatalogEntry) -> tuple[str, ...]:
+    """Предложения описания картинки без слов-описателей.
+
+    Описание — проза, поэтому делится ещё и по концу предложения. Слова вроде
+    «слайд» и «схема» выброшены: два таких слова совпадают с любым абзацем.
+    """
+    claims = []
+    for part in re.split(r"[\n•;.!?]+", entry.visual_summary):
+        words = [word for word in part.split() if not is_visual_filler(word.strip(",:()«»\"'"))]
+        claim = " ".join(words).strip()
+        if claim:
+            claims.append(claim)
+    return tuple(claims)
 
 
 def evidence_matches_entry(evidence: str, entry: SlideCatalogEntry) -> bool:
@@ -58,6 +113,8 @@ def _claims(entry: SlideCatalogEntry) -> tuple[str, ...]:
     visible_claims = tuple(
         part.strip() for part in re.split(r"[\n•;]+", entry.visible_text) if part.strip()
     )
+    # Описание картинки — утверждение о странице наравне с видимым текстом: у
+    # схемы без текста оно единственное, что можно подтвердить цитатой из речи.
     return tuple(
         value
         for value in (
@@ -66,6 +123,7 @@ def _claims(entry: SlideCatalogEntry) -> tuple[str, ...]:
             *entry.transcript_language_terms,
             *entry.formulas,
             *visible_claims,
+            *visual_claims(entry),
         )
         if value.strip()
     )
