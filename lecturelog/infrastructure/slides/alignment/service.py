@@ -208,6 +208,7 @@ class DocumentAlignmentService:
                         "unresolved",
                         item.score,
                         "deck_guard_insufficient_grounded_coverage",
+                        status_reason="deck_mismatch",
                     )
                     for item in assignments
                 ),

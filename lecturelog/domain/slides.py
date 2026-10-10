@@ -116,13 +116,19 @@ class SlideCandidate:
 #   `stronger_competitor` — кандидат другого раздела совпадает с речью сильнее
 #   выбранного (margin ниже порога);
 # - неупомянутый (match_status="unmentioned") — `no_candidates` — ни одного
-#   кандидата с доказательством, `service_role` — служебная пустая страница.
+#   кандидата с доказательством, `service_role` — служебная пустая страница,
+#   `alignment_failed` — выравнивание упало и слайд не оценивался,
+#   `legacy_mode` — старый режим не привязал слайд;
+# - колода-чужак (match_status="deck_mismatch") — `deck_mismatch`.
 SlideStatusReason = Literal[
     "weak_evidence",
     "deck_order_conflict",
     "stronger_competitor",
     "no_candidates",
     "service_role",
+    "alignment_failed",
+    "legacy_mode",
+    "deck_mismatch",
 ]
 
 

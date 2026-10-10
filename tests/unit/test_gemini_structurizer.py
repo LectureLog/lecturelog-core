@@ -1178,3 +1178,61 @@ def test_render_prompt_allows_name_fix_only_on_phonetic_similarity():
     )
 
     assert "только при фонетическом сходстве" in text.lower()
+
+
+async def _structurize_one_slide(tmp_path, prompts_dir, monkeypatch, *, mode, align, slide_num=1):
+    srt = tmp_path / "t.srt"
+    srt.write_text("1\n00:00:00,000 --> 00:00:10,000\ntext\n", encoding="utf-8")
+    slide = tmp_path / "slide.png"
+    slide.write_bytes(b"slide")
+    asset = SlideAsset(
+        slide_num, slide, "document", extracted_text="text", native_text_quality="good"
+    )
+    responses = [
+        json.dumps([{"title": "T", "start": "0:00", "end": "0:10"}]),
+        json.dumps([{"title": "S", "start": "0:00", "end": "0:10"}]),
+    ]
+    if mode != "v2":
+        # legacy-матч слайдов: грубый по темам и точный по подтемам — пустые.
+        responses += ["{}", "{}"]
+    gemini = ScriptedGemini([*responses, "Rendered text."])
+    structurizer = _make_structurizer(gemini, prompts_dir)
+    structurizer._document_alignment_mode = mode
+    monkeypatch.setattr(structurizer._document_alignment, "align", align)
+    result = await structurizer.structurize(
+        srt_path=srt,
+        slide_assets=[asset],
+        context=StructurizeContext("audio"),
+        output_dir=tmp_path / "out",
+    )
+    return result.slide_assignments[0]
+
+
+@pytest.mark.asyncio
+async def test_v2_сбой_выравнивания_даёт_unmentioned_с_причиной_alignment_failed(
+    tmp_path, prompts_dir, monkeypatch
+):
+    async def align(**_kwargs):
+        raise RuntimeError("boom")
+
+    item = await _structurize_one_slide(tmp_path, prompts_dir, monkeypatch, mode="v2", align=align)
+
+    assert (item.match_status, item.reason_code) == ("unmentioned", "alignment_error")
+    assert item.status_reason == "alignment_failed"
+
+
+@pytest.mark.asyncio
+async def test_legacy_слайд_без_привязки_даёт_unmentioned_с_причиной_legacy_mode(
+    tmp_path, prompts_dir, monkeypatch
+):
+    async def align(**_kwargs):
+        raise AssertionError("в legacy выравнивание не запускается")
+
+    # Номер вне 1..N: страховка backfill (по числу слайдов) его не подбирает,
+    # слайд остаётся без привязки.
+    item = await _structurize_one_slide(
+        tmp_path, prompts_dir, monkeypatch, mode="legacy", align=align, slide_num=5
+    )
+
+    assert (item.match_status, item.reason_code) == ("unmentioned", "legacy_unassigned")
+    assert item.status_reason == "legacy_mode"

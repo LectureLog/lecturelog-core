@@ -448,6 +448,7 @@ class GeminiStructurizer(Structurizer):
                             "unresolved",
                             0.0,
                             "alignment_error",
+                            status_reason="alignment_failed",
                         )
                         for asset in slide_assets
                     )
@@ -691,6 +692,7 @@ class GeminiStructurizer(Structurizer):
                         "unresolved",
                         0.0,
                         "legacy_unassigned",
+                        status_reason="legacy_mode",
                     )
                 )
                 placements.append(

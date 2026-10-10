@@ -111,6 +111,7 @@ async def test_deck_guard_marks_unrelated_deck(tmp_path):
     ).assignments
     assert result[0].match_status == "deck_mismatch"
     assert result[0].reason_code.startswith("deck_guard")
+    assert result[0].status_reason == "deck_mismatch"
 
 
 @pytest.mark.asyncio
