@@ -18,6 +18,7 @@ from lecturelog.infrastructure.slides.alignment.anchoring import anchor_assignme
 from lecturelog.infrastructure.slides.alignment.confidence import calibrate
 from lecturelog.infrastructure.slides.alignment.diagnostics import write_diagnostic
 from lecturelog.infrastructure.slides.alignment.retrieval import generate_candidates
+from lecturelog.infrastructure.slides.alignment.sequence import AlignmentWeights
 from lecturelog.infrastructure.slides.alignment.service import DocumentAlignmentService
 from tests.unit.slides.test_visual_evidence import (
     _COURSE_SLIDE,
@@ -67,7 +68,9 @@ def _entry(visual="", visible="", title=None, **kwargs):
 
 
 def _cands(entry, texts=_TEXTS, **kwargs):
-    return generate_candidates(entry, _sections(), _blocks(*texts), visual_weight=3.0, **kwargs)
+    return generate_candidates(
+        entry, _sections(), _blocks(*texts), weights=AlignmentWeights(), **kwargs
+    )
 
 
 # ── ось данных: пустое, короткое, дубль ─────────────────────────────
@@ -249,12 +252,12 @@ async def test_без_llm_вообще_лексика_и_описание_не_�
     # без каталога путь лексики недоступен через align; проверяем сам лексический путь
     sections = _sections()
     blocks = _blocks(*_TEXTS)
-    pool = generate_candidates(entries[2], sections, blocks, visual_weight=3.0)
-    grounded = service._lexical_ground(entries[2], pool, blocks, 3.0)
+    pool = generate_candidates(entries[2], sections, blocks, weights=AlignmentWeights())
+    grounded = service._lexical_ground(entries[2], pool, blocks, AlignmentWeights())
     assert grounded is not None
-    from lecturelog.infrastructure.slides.alignment.sequence import AlignmentWeights, align_sequence
+    from lecturelog.infrastructure.slides.alignment.sequence import align_sequence
 
-    others = service._with_competition(grounded, pool, 3.0)
+    others = service._with_competition(grounded, pool, AlignmentWeights())
     item = align_sequence([2], {2: (others,)}, (), AlignmentWeights())[0]
     assert item.assignment_confidence != "verified"
 
@@ -268,12 +271,13 @@ def test_визуальная_оценка_не_зависит_от_PYTHONHASHSE
         """
         from lecturelog.domain.slides import SlideCatalogEntry, SectionRef, TranscriptBlock
         from lecturelog.infrastructure.slides.alignment.retrieval import generate_candidates
+        from lecturelog.infrastructure.slides.alignment.sequence import AlignmentWeights
         words = "альфа бета гамма дельта эпсилон дзета тета йота каппа лямбда сигма омега".split()
         sections = [SectionRef(i, 0, i, i*20.0, i*20.0+19.0) for i in range(6)]
         texts = [" ".join(words[: 3 + (i * 2) % 9]) + " " + " ".join(words[i:i+2]) for i in range(6)]
         blocks = [TranscriptBlock(i+1, i*20.0+1, i*20.0+9, t) for i, t in enumerate(texts)]
         e = SlideCatalogEntry(1, "content", None, "", visual_summary=" ".join(words))
-        r = generate_candidates(e, sections, blocks, visual_weight=3.0, limit=6)
+        r = generate_candidates(e, sections, blocks, weights=AlignmentWeights(), limit=6)
         print([(c.global_section_id, repr(c.visual_score), repr(c.lexical_score)) for c in r])
         """
     )
