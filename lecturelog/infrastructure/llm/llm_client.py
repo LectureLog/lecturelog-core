@@ -71,10 +71,10 @@ def _extract_rate_limit_raw(error: openai.RateLimitError) -> str:
 
 
 def _is_google_byok_auth_error(error: openai.AuthenticationError) -> bool:
-    """True only for a provider-side Google BYOK credential failure.
+    """True только для отказа привязанного Google BYOK-ключа.
 
-    An invalid OpenRouter API key must still propagate immediately.  OpenRouter
-    identifies a failed bound Google credential in error.metadata.
+    Невалидный ключ самого OpenRouter обязан пробрасываться сразу: это ошибка
+    конфигурации, а не отказ конкретного кандидата.
     """
     body: Any = getattr(error, "body", None)
     try:
@@ -184,6 +184,8 @@ class LlmClient:
                 await self._cooldown.mark_rate_limited(model, ttl)
                 continue
             except openai.AuthenticationError as error:
+                # Мёртвый BYOK-ключ (удалённый service account) — отказ конкретной
+                # модели, а не всего ключа: пробуем следующую вместо падения задачи.
                 if not _is_google_byok_auth_error(error):
                     raise
                 last_error = error
