@@ -22,11 +22,9 @@ from lecturelog.infrastructure.srt import (
     extract_srt_cue_range,
     parse_srt_blocks,
     parse_srt_time,
+    snap_sections_to_cues,
 )
-from lecturelog.infrastructure.structurize.gemini_structurizer import (
-    GeminiStructurizer,
-    _snap_sections_to_cues,
-)
+from lecturelog.infrastructure.structurize.gemini_structurizer import GeminiStructurizer
 
 # ── helpers ──────────────────────────────────────────────────────────────
 
@@ -139,25 +137,25 @@ def test_диапазон_сохраняет_эмодзи_rtl_и_crlf_чтобы
     assert _texts_in_range(srt, (1, 1)) == ["שלום 🙂 мир"]
 
 
-# ── _snap_sections_to_cues: данные ──────────────────────────────────────
+# ── snap_sections_to_cues: данные ──────────────────────────────────────
 
 
 def test_пустой_транскрипт_не_трогает_подтемы_и_возвращает_None_чтобы_работало_старое_поведение():
     layout = [[_sec("А", 0, 60), _sec("Б", 60, 120)]]
     before = json.dumps(layout)
-    assert _snap_sections_to_cues(layout, "") is None
+    assert snap_sections_to_cues(layout, "") is None
     assert json.dumps(layout) == before
 
 
 def test_без_подтем_сдвиг_возвращает_None_и_не_падает_на_пустом_списке():
-    assert _snap_sections_to_cues([], _srt((0, 1, "р"))) is None
-    assert _snap_sections_to_cues([[], []], _srt((0, 1, "р"))) is None
+    assert snap_sections_to_cues([], _srt((0, 1, "р"))) is None
+    assert snap_sections_to_cues([[], []], _srt((0, 1, "р"))) is None
 
 
 def test_одна_реплика_на_несколько_подтем_оставляет_одну_подтему_чтобы_реплика_не_рендерилась_трижды():
     srt = _srt((0, 60, "единственная"))
     layout = [[_sec("А", 0, 20), _sec("Б", 20, 40), _sec("В", 40, 60)]]
-    ranges = _snap_sections_to_cues(layout, srt)
+    ranges = snap_sections_to_cues(layout, srt)
     assert ranges == [(1, 1)]
     assert sum(len(s) for s in layout) == 1
 
@@ -165,7 +163,7 @@ def test_одна_реплика_на_несколько_подтем_остав
 def test_граница_ровно_посередине_реплики_оставляет_её_в_предыдущей_подтеме_по_правилу_вправо():
     srt = _srt((0, 10, "до"), (10, 20, "середина"), (20, 30, "после"))
     layout = [[_sec("А", 0, 15), _sec("Б", 15, 30)]]
-    ranges = _snap_sections_to_cues(layout, srt)
+    ranges = snap_sections_to_cues(layout, srt)
     assert _texts_in_range(srt, ranges[0]) == ["до", "середина"]
     assert _texts_in_range(srt, ranges[1]) == ["после"]
 
@@ -173,14 +171,14 @@ def test_граница_ровно_посередине_реплики_оста�
 def test_граница_чуть_левее_середины_отдаёт_реплику_следующей_подтеме_к_ближайшему_краю():
     srt = _srt((0, 10, "до"), (10, 20, "середина"), (20, 30, "после"))
     layout = [[_sec("А", 0, 14.999), _sec("Б", 14.999, 30)]]
-    ranges = _snap_sections_to_cues(layout, srt)
+    ranges = snap_sections_to_cues(layout, srt)
     assert _texts_in_range(srt, ranges[1]) == ["середина", "после"]
 
 
 def test_граница_в_паузе_между_репликами_отдаёт_следующую_реплику_следующей_подтеме():
     srt = _srt((0, 10, "до паузы"), (30, 40, "после паузы"))
     layout = [[_sec("А", 0, 20), _sec("Б", 20, 40)]]
-    ranges = _snap_sections_to_cues(layout, srt)
+    ranges = snap_sections_to_cues(layout, srt)
     assert _texts_in_range(srt, ranges[0]) == ["до паузы"]
     assert _texts_in_range(srt, ranges[1]) == ["после паузы"]
 
@@ -188,7 +186,7 @@ def test_граница_в_паузе_между_репликами_отдаёт
 def test_реплики_с_одинаковым_началом_попадают_ровно_в_одну_подтему_каждая():
     srt = _srt((0, 10, "р1"), (10, 10, "нулевая"), (10, 20, "р2"), (20, 30, "р3"))
     layout = [[_sec("А", 0, 10), _sec("Б", 10, 30)]]
-    ranges = _snap_sections_to_cues(layout, srt)
+    ranges = snap_sections_to_cues(layout, srt)
     all_texts = [t for rng in ranges for t in _texts_in_range(srt, rng)]
     assert sorted(all_texts) == sorted(["р1", "нулевая", "р2", "р3"])
 
@@ -196,7 +194,7 @@ def test_реплики_с_одинаковым_началом_попадают_
 def test_подтема_из_одной_нулевой_реплики_получает_конец_строго_позже_начала_иначе_выравнивание_отбросит_колоду():
     srt = _srt((0, 10, "р1"), (10, 10, "нулевая"), (10.5, 20, "р2"))
     layout = [[_sec("А", 0, 10), _sec("Б", 10, 10.4), _sec("В", 10.4, 20)]]
-    _snap_sections_to_cues(layout, srt)
+    snap_sections_to_cues(layout, srt)
     for section in layout[0]:
         assert parse_srt_time(section["end"]) > parse_srt_time(section["start"])
     # шкала принимается v2-выравниванием (end <= start там фатально)
@@ -206,7 +204,7 @@ def test_подтема_из_одной_нулевой_реплики_получ
 def test_подтема_начинающаяся_за_концом_транскрипта_удаляется_а_не_рендерится_по_пустому_фрагменту():
     srt = _srt((0, 60, "р1"), (60, 120, "р2"))
     layout = [[_sec("А", 0, 120), _sec("Галлюцинация", 500, 600)]]
-    ranges = _snap_sections_to_cues(layout, srt)
+    ranges = snap_sections_to_cues(layout, srt)
     assert [s["title"] for s in layout[0]] == ["А"]
     assert _texts_in_range(srt, ranges[0]) == ["р1", "р2"]
 
@@ -215,7 +213,7 @@ def test_все_подтемы_до_первой_реплики_возвраща
     srt = _srt((100, 110, "поздняя"))
     layout = [[_sec("А", 0, 10), _sec("Б", 10, 20)]]
     before = json.dumps(layout)
-    assert _snap_sections_to_cues(layout, srt) is None
+    assert snap_sections_to_cues(layout, srt) is None
     assert json.dumps(layout) == before
 
 
@@ -226,7 +224,7 @@ def test_диапазоны_идут_подряд_без_дыр_и_пересе�
         [_sec("А", 0, 100.1), _sec("Б", 100.1, 200.7)],
         [_sec("В", 200.7, 301.2), _sec("Г", 301.2, 438)],
     ]
-    ranges = _snap_sections_to_cues(layout, srt)
+    ranges = snap_sections_to_cues(layout, srt)
     assert ranges[0][0] == 1
     for (_, last), (first, _) in zip(ranges, ranges[1:], strict=False):
         assert first == last + 1
@@ -236,7 +234,7 @@ def test_диапазоны_идут_подряд_без_дыр_и_пересе�
 def test_таймкоды_подтем_после_сдвига_совпадают_с_краями_их_реплик_с_миллисекундами():
     srt = _srt((0.04, 10.5, "р1"), (10.5, 21.25, "р2"), (21.25, 30.672, "р3"))
     layout = [[_sec("А", 0, 12), _sec("Б", 12, 30.672)]]
-    _snap_sections_to_cues(layout, srt)
+    snap_sections_to_cues(layout, srt)
     assert [(s["start"], s["end"]) for s in layout[0]] == [
         ("00:00:00,040", "00:00:10,500"),
         ("00:00:10,500", "00:00:30,672"),
@@ -251,7 +249,7 @@ def test_граница_в_формате_мм_сс_и_с_точкой_разб�
             {"title": "Б", "start": "00:01:00.000", "end": "3:00"},
         ]
     ]
-    ranges = _snap_sections_to_cues(layout, srt)
+    ranges = snap_sections_to_cues(layout, srt)
     assert ranges == [(1, 1), (2, 3)]
 
 
@@ -261,13 +259,13 @@ def test_удаляется_именно_схлопнувшаяся_подтем
     srt = _srt((0, 60, "р1"), (60, 120, "р2"), (120, 180, "р3"))
     twin = {"title": "Повтор", "start": _stamp(60), "end": _stamp(120)}
     layout = [[_sec("А", 0, 60), dict(twin)], [dict(twin), _sec("В", 120, 180)]]
-    ranges = _snap_sections_to_cues(layout, srt)
+    ranges = snap_sections_to_cues(layout, srt)
     assert [s["title"] for s in layout[0]] == ["А"]
     assert [s["title"] for s in layout[1]] == ["Повтор", "В"]
     assert len(ranges) == 3
 
 
-# ── _snap_sections_to_cues: нестандартный порядок и перекрытия ──────────
+# ── snap_sections_to_cues: нестандартный порядок и перекрытия ──────────
 
 
 def test_неупорядоченный_srt_не_даёт_одной_реплике_попасть_в_две_подтемы():
@@ -276,7 +274,7 @@ def test_неупорядоченный_srt_не_даёт_одной_репли�
     подряд, и диапазон (первый..последний) захватывает чужие реплики."""
     srt = _srt((60, 120, "вторая"), (0, 60, "первая"), (120, 180, "третья"))
     layout = [[_sec("А", 0, 60), _sec("Б", 60, 180)]]
-    ranges = _snap_sections_to_cues(layout, srt)
+    ranges = snap_sections_to_cues(layout, srt)
     fragments = [_texts_in_range(srt, rng) for rng in ranges]
     for text in ("первая", "вторая", "третья"):
         assert sum(text in frag for frag in fragments) == 1, (text, fragments)
@@ -291,7 +289,7 @@ def test_вложенная_длинная_реплика_не_делает_шк
     layout = [[_sec("А", 0, 12), _sec("Б", 12, 100), _sec("В", 100, 200)]]
     blocks = parse_srt_blocks(srt)
     DocumentAlignmentService._section_refs(json.loads(json.dumps(layout)), blocks)  # до сдвига ок
-    _snap_sections_to_cues(layout, srt)
+    snap_sections_to_cues(layout, srt)
     DocumentAlignmentService._section_refs(layout, blocks)
 
 
@@ -301,7 +299,7 @@ def test_неупорядоченные_подтемы_модели_не_тер�
     реплика, лежащая внутри интервала одной из подтем, не попадает никуда."""
     srt = _srt((0, 60, "а"), (60, 120, "б"), (120, 180, "в"))
     layout = [[_sec("А", 0, 60), _sec("В", 120, 180), _sec("Б", 60, 120)]]
-    ranges = _snap_sections_to_cues(layout, srt) or []
+    ranges = snap_sections_to_cues(layout, srt) or []
     fragments = [_texts_in_range(srt, rng) for rng in ranges]
     for text in ("а", "б", "в"):
         assert sum(text in frag for frag in fragments) == 1, (text, fragments)
@@ -550,7 +548,7 @@ async def test_v2_реальная_проверка_шкалы_принимае�
     cues = [(i * 6.4, i * 6.4 + 6.4, f"р{i:02d}") for i in range(40)]
     srt = _srt(*cues)
     layout = [[_sec("А", 0, 61), _sec("Б", 61, 130)], [_sec("В", 128, 200), _sec("Г", 200, 256)]]
-    _snap_sections_to_cues(layout, srt)
+    snap_sections_to_cues(layout, srt)
     refs = DocumentAlignmentService._section_refs(layout, parse_srt_blocks(srt))
     assert len(refs) == 4
 

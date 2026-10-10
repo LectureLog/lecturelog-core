@@ -35,7 +35,11 @@ from lecturelog.infrastructure.slides.alignment.semantic import (
     parse_semantic_match,
     validate_semantic_response,
 )
-from lecturelog.infrastructure.slides.alignment.sequence import AlignmentWeights, align_sequence
+from lecturelog.infrastructure.slides.alignment.sequence import (
+    AlignmentWeights,
+    align_sequence,
+    candidate_score,
+)
 from lecturelog.infrastructure.srt import parse_srt_blocks, parse_srt_time
 
 logger = logging.getLogger(__name__)
@@ -158,7 +162,7 @@ class DocumentAlignmentService:
                 blocks,
                 limit=self._tuning.candidate_limit,
                 neighbor_radius=self._tuning.neighbor_radius,
-                visual_weight=self._tuning.weights.visual_weight,
+                weights=self._tuning.weights,
             )
             candidates[asset.slide_num] = await self._verify(
                 entry,
@@ -204,6 +208,7 @@ class DocumentAlignmentService:
                         "unresolved",
                         item.score,
                         "deck_guard_insufficient_grounded_coverage",
+                        status_reason="deck_mismatch",
                     )
                     for item in assignments
                 ),
@@ -270,7 +275,7 @@ class DocumentAlignmentService:
         if not candidates:
             return ()
         if self._llm is None or not self._models or not catalog_verified:
-            grounded = self._lexical_ground(entry, candidates, blocks, self._visual_weight)
+            grounded = self._lexical_ground(entry, candidates, blocks, self._tuning.weights)
             return (grounded,) if grounded else ()
         payload = {
             "slide": {
@@ -346,9 +351,9 @@ class DocumentAlignmentService:
                     and second.global_section_id == first_verdict.global_section_id
                     and _tier_at_least(second.semantic_tier, "strong")
                 ):
-                    return (self._with_competition(second, candidates, self._visual_weight),)
+                    return (self._with_competition(second, candidates, self._tuning.weights),)
                 return self._global_recovery(entry, sections, blocks)
-            return (self._with_competition(first, candidates, self._visual_weight),)
+            return (self._with_competition(first, candidates, self._tuning.weights),)
         except Exception as error:
             logger.warning(
                 "semantic verification failed closed for slide %d: %s",
@@ -357,17 +362,19 @@ class DocumentAlignmentService:
             )
             return self._global_recovery(entry, sections, blocks)
 
-    @property
-    def _visual_weight(self) -> float:
-        return self._tuning.weights.visual_weight
-
     @staticmethod
-    def _lexical_ground(entry, candidates, blocks, visual_weight: float) -> SlideCandidate | None:
-        # Backwards-compatible, deterministic path for tests/offline operation.
+    def _lexical_ground(
+        entry, candidates, blocks, weights: AlignmentWeights
+    ) -> SlideCandidate | None:
+        """Детерминированная привязка без судьи: для офлайн-режима и тестов.
+
+        Берёт блок раздела, текст которого подтверждает страницу, и ставит
+        потолок `strong`: модель совпадение не подтверждала.
+        """
         by_id = {block.block_id: block for block in blocks}
         matches = []
         for candidate in candidates:
-            if _evidence_strength(candidate, visual_weight) <= 1.0:
+            if candidate_score(candidate, weights, with_verdict=False) <= 1.0:
                 continue
             for block_id in candidate.evidence_block_ids:
                 block = by_id[block_id]
@@ -398,19 +405,19 @@ class DocumentAlignmentService:
                 "strong",
                 candidate.visual_score,
             )
-            return DocumentAlignmentService._with_competition(grounded, candidates, visual_weight)
+            return DocumentAlignmentService._with_competition(grounded, candidates, weights)
         return None
 
     @staticmethod
-    def _with_competition(candidate, candidates, visual_weight: float):
+    def _with_competition(candidate, candidates, weights: AlignmentWeights):
         competitors = tuple(
             item for item in candidates if item.global_section_id != candidate.global_section_id
         )
         # Отрыв считается по силе совпадения с речью — лексика плюс описание
         # картинки, — без бонуса вердикта: у конкурентов судьи не было.
         margin = (
-            _evidence_strength(candidate, visual_weight)
-            - max(_evidence_strength(item, visual_weight) for item in competitors)
+            candidate_score(candidate, weights, with_verdict=False)
+            - max(candidate_score(item, weights, with_verdict=False) for item in competitors)
             if competitors
             else None
         )
@@ -423,9 +430,9 @@ class DocumentAlignmentService:
             blocks,
             limit=len(sections),
             neighbor_radius=0,
-            visual_weight=self._visual_weight,
+            weights=self._tuning.weights,
         )
-        recovered = self._lexical_ground(entry, recovered_pool, blocks, self._visual_weight)
+        recovered = self._lexical_ground(entry, recovered_pool, blocks, self._tuning.weights)
         if recovered is None:
             return ()
         # Тот же потолок, что и у `_lexical_ground`: без участия модели вердикт
@@ -535,11 +542,6 @@ class DocumentAlignmentService:
         if not refs:
             raise ValueError("section timeline is empty")
         return tuple(refs)
-
-
-def _evidence_strength(candidate: SlideCandidate, visual_weight: float) -> float:
-    """Совпадение кандидата с речью без вердикта судьи: лексика и описание картинки."""
-    return candidate.lexical_score + (candidate.visual_score or 0.0) * visual_weight
 
 
 def _is_supported_image(path: Path) -> bool:

@@ -277,7 +277,7 @@ async def test_колода_только_из_непривязанных_при�
     [item] = result.assignments
     assert item.match_status == "deck_mismatch"
     assert item.global_section_id is None
-    assert item.status_reason is None
+    assert item.status_reason == "deck_mismatch"
     assert result.catalog == {}
     _, placement = anchor_assignment(item, None, "текст")
     assert placement.output_kind == "appendix"

@@ -115,12 +115,15 @@ def test_отрицательный_margin_ниже_порога_действу�
     assert (item.match_status, item.assignment_confidence) == ("unbound", "unresolved")
 
 
-def test_calibrate_без_min_margin_ведёт_себя_по_старому_для_отрицательного_margin():
-    """Обратная совместимость вызова: дефолт 0.0 не должен включать правило для margin == 0."""
-    result = calibrate(
-        semantic_tier="explicit", margin=0.0, has_grounded_evidence=True, has_competing_context=True
-    )
-    assert result.unbound_reason is None
+def test_calibrate_требует_min_margin_явно_без_дефолта():
+    """Порог берётся из AlignmentWeights; молчаливый дефолт 0.0 расходился бы с ним."""
+    with pytest.raises(TypeError):
+        calibrate(  # type: ignore[call-arg]
+            semantic_tier="explicit",
+            margin=0.0,
+            has_grounded_evidence=True,
+            has_competing_context=True,
+        )
 
 
 def test_calibrate_не_падает_на_nan_margin_и_не_объявляет_конкурента():
@@ -403,14 +406,14 @@ def test_strongest_candidate_не_падает_и_детерминирован_�
 def test_with_competition_исключает_свой_раздел_из_конкурентов_и_считает_margin_по_сильнейшему():
     me = _c(1, 1, 5.0, tier="none", quote=None)
     pool = (me, _rival(1, 1, 99.0), _rival(1, 2, 9.0), _rival(1, 3, 7.0))
-    out = DocumentAlignmentService._with_competition(me, pool, 3.0)
+    out = DocumentAlignmentService._with_competition(me, pool, AlignmentWeights())
     assert {c.global_section_id for c in out.competitors} == {2, 3}
     assert out.competition_margin == pytest.approx(5.0 - 9.0)
 
 
 def test_with_competition_без_конкурентов_даёт_margin_none_и_пустой_кортеж():
     me = _c(1, 1, 5.0)
-    out = DocumentAlignmentService._with_competition(me, (me,), 3.0)
+    out = DocumentAlignmentService._with_competition(me, (me,), AlignmentWeights())
     assert out.competition_margin is None
     assert out.competitors == ()
 
@@ -418,15 +421,15 @@ def test_with_competition_без_конкурентов_даёт_margin_none_и_
 def test_with_competition_не_вкладывает_конкурентов_друг_в_друга_иначе_раздувается_память_и_repr():
     me = _c(1, 1, 5.0)
     pool = (me, _rival(1, 2, 9.0), _rival(1, 3, 7.0))
-    out = DocumentAlignmentService._with_competition(me, pool, 3.0)
+    out = DocumentAlignmentService._with_competition(me, pool, AlignmentWeights())
     assert all(c.competitors == () for c in out.competitors)
 
 
 def test_with_competition_повторный_вызов_на_результате_идемпотентен():
     me = _c(1, 1, 5.0)
     pool = (me, _rival(1, 2, 9.0))
-    once = DocumentAlignmentService._with_competition(me, pool, 3.0)
-    assert DocumentAlignmentService._with_competition(once, pool, 3.0) == once
+    once = DocumentAlignmentService._with_competition(me, pool, AlignmentWeights())
+    assert DocumentAlignmentService._with_competition(once, pool, AlignmentWeights()) == once
 
 
 # ── сервис целиком: коллизии, deck guard, порог из tuning ────────────

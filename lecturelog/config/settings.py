@@ -189,6 +189,21 @@ class WorkerConfig(BaseSettings):
     sweep_interval_minutes: float = Field(
         60, alias="WORK_DIR_SWEEP_INTERVAL_MINUTES", gt=0, le=60 * 24 * 365
     )
+    # Срок хранения неиспользуемой записи кеша транскриптов (по mtime записи).
+    # Не меньше срока workspace упавшей задачи: кеш для того и нужен, чтобы
+    # перезапуск после удаления workspace не платил за STT повторно.
+    transcript_cache_retention_days: float = Field(
+        30, alias="TRANSCRIPT_CACHE_RETENTION_DAYS", gt=0, le=365
+    )
+
+    @model_validator(mode="after")
+    def validate_cache_retention(self) -> WorkerConfig:
+        if self.transcript_cache_retention_days * 24 < self.failed_retention_hours:
+            raise ValueError(
+                "TRANSCRIPT_CACHE_RETENTION_DAYS (в часах) не может быть меньше "
+                "WORK_DIR_FAILED_RETENTION_HOURS"
+            )
+        return self
 
 
 class MediaConfig(BaseSettings):

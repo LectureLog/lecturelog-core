@@ -4,7 +4,6 @@ import asyncio
 import inspect
 import json
 import logging
-from bisect import bisect_left
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +35,7 @@ from lecturelog.infrastructure.srt import (
     format_time,
     parse_srt_blocks,
     parse_srt_time,
+    snap_sections_to_cues,
 )
 from lecturelog.infrastructure.structurize.slide_backfill import backfill_missing_slides
 from lecturelog.infrastructure.structurize.slide_mapping import normalize_slide_mapping
@@ -83,108 +83,6 @@ def _repair_section_timeline(topics_sections: list[list[dict[str, Any]]], srt_co
             section["end"],
         )
         section["end"] = format_srt_seconds(repaired)
-
-
-def _snap_sections_to_cues(
-    topics_sections: list[list[dict[str, Any]]], srt_content: str
-) -> list[tuple[int, int]] | None:
-    """Сдвигает начала подтем к границам реплик, чтобы реплика была ровно в одной подтеме.
-
-    Модель режет по таймкодам и нередко попадает посреди реплики: фрагмент по
-    перекрытию тогда достаётся обеим соседним подтемам, и на стыке текст повторяется.
-    Начало каждой подтемы переносится к ближайшей границе реплики (начало реплики
-    или её конец = начало следующей). Реплики между двумя началами принадлежат
-    предыдущей подтеме, поэтому зазоры между подтемами тоже не теряются.
-
-    Подтема, в которой после сдвига не осталось ни одной реплики (две границы
-    упали на одну, подтема короче реплики), удаляется вместе с заголовком: её
-    нечем наполнить, а рендер по пустому фрагменту выдумывает текст. Реплики
-    остаются у тех подтем, которым достались.
-
-    Меняет topics_sections на месте (start/end у выживших, удаляет схлопнувшиеся)
-    и возвращает для каждой оставшейся подтемы в плоском порядке диапазон
-    номеров реплик (первая, последняя) для рендера. Без реплик в транскрипте
-    или если не осталось ни одной подтемы с репликами — ничего не меняет и
-    возвращает None (работаем по таймкодам, как раньше).
-    """
-
-    # Модель может вернуть подтемы не по порядку времени: упорядочиваем внутри темы,
-    # иначе монотонизация границ схлопнет подтемы и потеряет их реплики.
-    # Работаем с копией порядка: при возврате None исходный порядок не трогаем.
-    ordered = [
-        sorted(sections, key=lambda section: parse_srt_time(str(section["start"])))
-        for sections in topics_sections
-    ]
-    flat = [section for sections in ordered for section in sections]
-    blocks = sorted(parse_srt_blocks(srt_content), key=lambda block: block.start_s)
-    if not flat or not blocks:
-        return None
-
-    starts = [block.start_s for block in blocks]
-
-    def boundary(seconds: float) -> int:
-        # Индекс первой реплики подтемы: все реплики левее принадлежат предыдущей.
-        k = bisect_left(starts, seconds)
-        # Граница посреди реплики — к ближайшему краю, при равенстве вправо.
-        if (
-            k > 0
-            and blocks[k - 1].end_s > seconds
-            and seconds - starts[k - 1] < blocks[k - 1].end_s - seconds
-        ):
-            return k - 1
-        return k
-
-    firsts: list[int] = []
-    for section in flat:
-        index = boundary(parse_srt_time(str(section["start"])))
-        # Первая подтема забирает всё с начала транскрипта: реплика не может
-        # остаться вне подтем только потому, что модель начала не с неё.
-        firsts.append(max(index, firsts[-1]) if firsts else 0)
-    # Хвост после конца последней подтемы достаётся ей же, симметрично началу.
-    # Если подтемы целиком лежат до первой реплики, их разметка не относится к
-    # транскрипту — оставляем таймкоды как есть.
-    if bisect_left(starts, parse_srt_time(str(flat[-1]["end"]))) == 0:
-        return None
-    stop = len(blocks)
-    edges = [*firsts[1:], stop]
-
-    kept = [i for i, (first, edge) in enumerate(zip(firsts, edges, strict=True)) if first < edge]
-    if not kept:
-        return None
-
-    for sections, original in zip(ordered, topics_sections, strict=True):
-        original[:] = sections
-
-    ranges: list[tuple[int, int]] = []
-    kept_set = set(kept)
-    previous_end = 0.0
-    for position, i in enumerate(kept):
-        section = flat[i]
-        covered = blocks[firsts[i] : edges[i]]
-        start_s = covered[0].start_s
-        if position + 1 < len(kept):
-            # Интервалы для медиа-нарезки смежные: конец = начало следующей подтемы,
-            # без пауз вне клипов. Текст при этом режется по репликам (cue_range).
-            end_s = blocks[firsts[kept[position + 1]]].start_s
-        else:
-            end_s = max(block.end_s for block in covered)
-        # Секции режут медиа по ЧЧ:ММ:СС: после усечения до секунд конец обязан быть
-        # строго позже начала (иначе пустой клип; только для подтем короче секунды
-        # конец заходит на соседа), а концы строго возрастают (требование v2).
-        end_s = max(end_s, float(int(start_s) + 1), previous_end + 0.001)
-        previous_end = end_s
-        section["start"] = format_srt_seconds(start_s)
-        section["end"] = format_srt_seconds(end_s)
-        ranges.append((firsts[i] + 1, edges[i]))
-    if len(kept) < len(flat):
-        logger.warning(
-            "после сдвига к границам реплик удалено подтем без реплик: %d",
-            len(flat) - len(kept),
-        )
-        dropped = {id(flat[i]) for i in range(len(flat)) if i not in kept_set}
-        for sections in topics_sections:
-            sections[:] = [section for section in sections if id(section) not in dropped]
-    return ranges
 
 
 def _parse_json(raw_text: str) -> Any:
@@ -519,7 +417,7 @@ class GeminiStructurizer(Structurizer):
 
         topics_sections: list[list[dict[str, Any]]] = [sections for _, sections in subsplit_results]
         _repair_section_timeline(topics_sections, srt_content)
-        cue_ranges = _snap_sections_to_cues(topics_sections, srt_content)
+        cue_ranges = snap_sections_to_cues(topics_sections, srt_content)
 
         v2_assignments: tuple[SlideAssignment, ...] = ()
         v2_catalog: dict[int, SlideCatalogEntry] = {}
@@ -550,6 +448,7 @@ class GeminiStructurizer(Structurizer):
                             "unresolved",
                             0.0,
                             "alignment_error",
+                            status_reason="alignment_failed",
                         )
                         for asset in slide_assets
                     )
@@ -793,6 +692,7 @@ class GeminiStructurizer(Structurizer):
                         "unresolved",
                         0.0,
                         "legacy_unassigned",
+                        status_reason="legacy_mode",
                     )
                 )
                 placements.append(

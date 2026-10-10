@@ -79,19 +79,18 @@ def align_sequence(
             # доказательством, пропуск — цена порядка колоды, а не признак того,
             # что лектор слайд не обсуждал.
             pool = candidates.get(slide_num, ())
-            reason: SlideStatusReason = "deck_order_conflict"
             weak = [
                 c
                 for c in pool
                 if c.competition_margin is not None and c.competition_margin < weights.min_margin
             ]
-            if weak:
-                # Конкурент сильнее выбора судьи — это более информативная причина,
-                # чем конфликт порядка, и его раздел должен участвовать в выборе галереи.
-                reason = "stronger_competitor"
-                pool = (*pool, *(rival for c in weak for rival in c.competitors))
+            # Конкурент сильнее выбора судьи — более информативная причина, чем
+            # конфликт порядка, и его раздел должен участвовать в выборе галереи.
+            reason: SlideStatusReason = "stronger_competitor" if weak else "deck_order_conflict"
             assignments.append(
-                _unbound_or_unmentioned(slide_num, pool, None, reason, None, weights)
+                _unbound_or_unmentioned(
+                    slide_num, _gallery_pool(pool, weak), None, reason, None, weights
+                )
             )
             continue
         constrained_total, _ = _solve(
@@ -108,7 +107,7 @@ def align_sequence(
             if chosen.competition_margin is not None
             else path_margin
         )
-        best_score = _candidate_score(chosen, weights)
+        best_score = candidate_score(chosen, weights)
         calibration = calibrate(
             semantic_tier=chosen.semantic_tier,
             margin=margin,
@@ -135,9 +134,7 @@ def align_sequence(
             continue
         pool = candidates.get(slide_num, ())
         if calibration.unbound_reason == "stronger_competitor":
-            # Конкуренты в выбор пути не входят, но галерея должна достаться
-            # разделу с самым сильным доказательством — возможно, конкуренту.
-            pool = (*pool, *chosen.competitors)
+            pool = _gallery_pool(pool, [chosen])
         assignments.append(
             _unbound_or_unmentioned(
                 slide_num,
@@ -151,6 +148,17 @@ def align_sequence(
     return tuple(assignments)
 
 
+def _gallery_pool(
+    pool: tuple[SlideCandidate, ...], losing: list[SlideCandidate]
+) -> tuple[SlideCandidate, ...]:
+    """Пул для выбора галереи: кандидаты слайда плюс конкуренты тех, кто им уступил.
+
+    Конкуренты в выбор пути не входят, но галерея должна достаться разделу с
+    самым сильным доказательством — возможно, конкуренту.
+    """
+    return (*pool, *(rival for candidate in losing for rival in candidate.competitors))
+
+
 def strongest_candidate(
     pool: tuple[SlideCandidate, ...],
     weights: AlignmentWeights,
@@ -159,7 +167,7 @@ def strongest_candidate(
 ) -> SlideCandidate | None:
     """Кандидат с самым сильным доказательством — его раздел получает непривязанный слайд.
 
-    Сила доказательства — та же оценка `_candidate_score`, что и в выборе пути:
+    Сила доказательства — та же оценка `candidate_score`, что и в выборе пути:
     `lexical_score * lexical_weight + бонус semantic_tier + visual_score * visual_weight`.
     Порядок колоды в неё не входит: он подсказка для пути, а не свойство
     доказательства. Доказательством считается только кандидат, который сам по
@@ -169,14 +177,14 @@ def strongest_candidate(
     evidence = [
         candidate
         for candidate in pool
-        if _candidate_score(candidate, weights) > weights.unmatched_score
+        if candidate_score(candidate, weights) > weights.unmatched_score
     ]
     if not evidence:
         return None
     return max(
         evidence,
         key=lambda candidate: (
-            _candidate_score(candidate, weights),
+            candidate_score(candidate, weights),
             candidate is preferred,
             -candidate.global_section_id,
         ),
@@ -202,7 +210,7 @@ def _unbound_or_unmentioned(
             None,
             "unresolved",
             0.0,
-            "no_supported_evidence",
+            "no_candidates",
             status_reason="no_candidates",
         )
     return SlideAssignment(
@@ -213,7 +221,7 @@ def _unbound_or_unmentioned(
         # Галерея не привязана к месту речи — якоря нет.
         None,
         "unresolved",
-        _candidate_score(strongest, weights),
+        candidate_score(strongest, weights),
         _unbound_reason_code(strongest, chosen, margin),
         status_reason=unbound_reason,
         visual_contribution=_visual_contribution(strongest, weights),
@@ -282,7 +290,7 @@ def _solve(
         for previous_section, (base_score, path) in states.items():
             for option in options:
                 section = option.global_section_id if option else previous_section
-                score = base_score + _candidate_score(option, weights)
+                score = base_score + candidate_score(option, weights)
                 if option is not None and previous_section is not None:
                     delta = option.global_section_id - previous_section
                     if delta < 0:
@@ -298,17 +306,29 @@ def _solve(
     return max(states.values(), key=lambda state: state[0])
 
 
-def _candidate_score(candidate: SlideCandidate | None, weights: AlignmentWeights) -> float:
+def candidate_score(
+    candidate: SlideCandidate | None,
+    weights: AlignmentWeights,
+    *,
+    with_verdict: bool = True,
+) -> float:
+    """Сила доказательства кандидата — единая формула пути DP и competition_margin.
+
+    `lexical_score * lexical_weight + visual_score * visual_weight` плюс, при
+    `with_verdict`, бонус `semantic_tier`. Без бонуса сравниваются кандидаты, у
+    которых судьи не было (конкуренты из retrieval).
+    """
     if candidate is None:
         return weights.unmatched_score
-    bonus = {
-        "explicit": weights.explicit_bonus,
-        "strong": weights.strong_bonus,
-        "weak": 0.0,
-        "none": -1.0,
-    }[candidate.semantic_tier]
-    return (
+    score = (
         candidate.lexical_score * weights.lexical_weight
-        + bonus
         + (candidate.visual_score or 0.0) * weights.visual_weight
     )
+    if with_verdict:
+        score += {
+            "explicit": weights.explicit_bonus,
+            "strong": weights.strong_bonus,
+            "weak": 0.0,
+            "none": -1.0,
+        }[candidate.semantic_tier]
+    return score

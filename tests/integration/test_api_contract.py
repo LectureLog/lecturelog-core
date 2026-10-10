@@ -274,6 +274,20 @@ def test_transcript_failed_on_transcribe_409(client, repo):
     assert r.json()["error"] == "transcribe_failed"
 
 
+def test_transcript_failed_without_transcript_410(client, repo):
+    """Упавшая после транскрипции задача, workspace которой убран: транскрипта нет и не будет."""
+    repo.tasks["t"] = Task(
+        task_id="t",
+        source_kind="audio",
+        status=TaskStatus.FAILED,
+        stage=PipelineStage.STRUCTURIZE,
+        error="llm down",
+    )
+    r = client.get("/api/v1/tasks/t/transcript")
+    assert r.status_code == 410
+    assert r.json() == {"error": "transcript_unavailable", "detail": "llm down"}
+
+
 def test_transcript_in_progress_202(client, repo):
     repo.tasks["t"] = Task(
         task_id="t",

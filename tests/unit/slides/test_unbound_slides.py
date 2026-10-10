@@ -255,6 +255,7 @@ async def test_slide_without_candidates_and_blank_page_stay_in_appendix(tmp_path
     assert course.match_status == "discussed"
     assert course.status_reason is None
     assert (unrelated.match_status, unrelated.status_reason) == ("unmentioned", "no_candidates")
+    assert unrelated.reason_code == unrelated.status_reason
     assert (blank.match_status, blank.status_reason) == ("unmentioned", "service_role")
     for assignment in (unrelated, blank):
         _, placement = anchor_assignment(
