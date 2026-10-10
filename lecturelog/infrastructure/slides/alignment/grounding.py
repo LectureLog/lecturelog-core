@@ -58,6 +58,12 @@ def _claims(entry: SlideCatalogEntry) -> tuple[str, ...]:
     visible_claims = tuple(
         part.strip() for part in re.split(r"[\n•;]+", entry.visible_text) if part.strip()
     )
+    # Описание картинки — утверждение о странице наравне с видимым текстом: у
+    # схемы без текста оно единственное, что можно подтвердить цитатой из речи.
+    # Описание — проза, поэтому делится ещё и по концу предложения.
+    visual_claims = tuple(
+        part.strip() for part in re.split(r"[\n•;.!?]+", entry.visual_summary) if part.strip()
+    )
     return tuple(
         value
         for value in (
@@ -66,6 +72,7 @@ def _claims(entry: SlideCatalogEntry) -> tuple[str, ...]:
             *entry.transcript_language_terms,
             *entry.formulas,
             *visible_claims,
+            *visual_claims,
         )
         if value.strip()
     )

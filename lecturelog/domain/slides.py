@@ -135,6 +135,9 @@ class SlideAssignment:
     reason_code: str
     # Заполнено только у непривязанных и неупомянутых слайдов.
     status_reason: SlideStatusReason | None = None
+    # Вклад описания картинки в силу доказательства (visual_score · visual_weight);
+    # None — у кандидата нет визуальной оценки или кандидата нет вовсе.
+    visual_contribution: float | None = None
 
 
 @dataclass(frozen=True)
