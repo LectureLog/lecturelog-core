@@ -360,7 +360,7 @@ async def test_stronger_competitor_sends_slide_to_competitor_gallery(tmp_path):
     # Диагностика называет причину и честно разводит, куда ушёл слайд
     # (сильнейший кандидат, без своего margin) и какой выбор пути проиграл.
     assert standard.reason_code.startswith("semantic_none:")
-    assert ":margin=none:path_section=1:path_margin=-" in standard.reason_code
+    assert ":margin=none:path_section=1:path_min_margin=-" in standard.reason_code
     diagnostic = tmp_path / "alignment.json"
     write_diagnostic(diagnostic, mode="v2", assignments=result.assignments)
     payload = json.loads(diagnostic.read_text(encoding="utf-8"))
