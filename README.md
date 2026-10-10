@@ -358,7 +358,7 @@ python scripts/submit_task.py --base http://my-host:8000/api/v1 status <task_id>
 | `DEEPGRAM_LANGUAGE`    | Язык Deepgram (по умолчанию `ru`). |
 | `DEEPGRAM_DETECT_LANGUAGE` | Автоопределение доминирующего языка (`true`/`false`). При `true` фиксированный `DEEPGRAM_LANGUAGE` не отправляется. |
 | `DEEPGRAM_UTT_SPLIT`   | Порог паузы utterance в секундах (по умолчанию `0.8`). |
-| `TRANSCRIPT_CACHE_DIR` | Кеш транскриптов (перезапуск без повторной транскрипции). По умолчанию `$WORK_DIR/transcript_cache`. Ключ: хеш аудио + провайдер/модель/язык/utt_split. |
+| `TRANSCRIPT_CACHE_DIR` | Кеш транскриптов (перезапуск без повторной транскрипции). По умолчанию `$WORK_DIR/transcript_cache` (в compose это именованный volume `lecturelog-core-transcript-cache`, переживает деплой). Ключ: хеш аудио + провайдер/модель/язык/utt_split. |
 | `WORK_DIR_CLEANUP_ENABLED` | TTL-очистка workspace упавших задач (по умолчанию `true`). |
 | `WORK_DIR_FAILED_RETENTION_HOURS` | Срок хранения workspace упавшей задачи в часах (по умолчанию `24`). Кеш транскриптов с этим сроком не связан. |
 | `TRANSCRIPT_CACHE_RETENTION_DAYS` | Срок хранения записи кеша транскриптов в днях (по умолчанию `30`, максимум `365`). Записи, не использованные дольше срока (mtime; обновляется при каждом попадании), удаляет тот же sweeper. Не может быть меньше `WORK_DIR_FAILED_RETENTION_HOURS`. |
