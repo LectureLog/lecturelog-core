@@ -116,6 +116,7 @@ def align_sequence(
             has_competing_context=chosen.competition_margin is not None,
             visual_score=chosen.visual_score,
             min_margin=weights.min_margin,
+            model_confirmed=chosen.model_confirmed,
         )
         if calibration.unbound_reason is None:
             assignments.append(

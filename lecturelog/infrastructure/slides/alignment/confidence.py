@@ -29,6 +29,7 @@ def calibrate(
     has_competing_context: bool,
     visual_score: float | None = None,
     min_margin: float = 0.0,
+    model_confirmed: bool = False,
 ) -> Calibration:
     # Margin ниже порога значит, что другой раздел совпадает с речью сильнее
     # выбранного: такой выбор не закрепляется ни на каком уровне, даже если
@@ -41,6 +42,7 @@ def calibrate(
         has_grounded_evidence=has_grounded_evidence,
         has_competing_context=has_competing_context,
         visual_score=visual_score,
+        model_confirmed=model_confirmed,
     )
     if confidence == "unresolved":
         return Calibration(confidence, "weak_evidence")
@@ -54,6 +56,7 @@ def confidence_from_margin(
     has_grounded_evidence: bool,
     has_competing_context: bool,
     visual_score: float | None = None,
+    model_confirmed: bool = False,
 ) -> Confidence:
     if (
         semantic_tier == "explicit"
@@ -62,8 +65,14 @@ def confidence_from_margin(
         and margin >= 1.5
     ):
         return "verified"
+    # Визуальная оценка — совпадение описания картинки с речью, а не вердикт:
+    # она усиливает подтверждение модели, но не заменяет его. Без вердикта
+    # судьи (лексический путь, восстановление после weak/none) — не выше probable.
     if (
-        visual_score is not None
+        model_confirmed
+        and semantic_tier in {"explicit", "strong"}
+        and has_grounded_evidence
+        and visual_score is not None
         and visual_score >= 0.85
         and has_competing_context
         and margin >= 1.0

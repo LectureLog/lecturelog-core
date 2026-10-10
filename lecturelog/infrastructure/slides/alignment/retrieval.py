@@ -6,6 +6,7 @@ from collections import Counter
 from collections.abc import Set
 
 from lecturelog.domain.slides import SectionRef, SlideCandidate, SlideCatalogEntry, TranscriptBlock
+from lecturelog.infrastructure.slides.alignment.grounding import is_visual_filler
 from lecturelog.infrastructure.slides.alignment.transcript import blocks_for_section
 
 _TOKEN_RE = re.compile(r"[\w+-]+", re.UNICODE)
@@ -17,8 +18,10 @@ _MAX_EVIDENCE_BLOCKS = 6
 # пяти буквам («серверу» и «сервер» — одна основа).
 _VISUAL_MIN_TOKEN = 4
 _VISUAL_STEM = 5
-# Сколько разных основ описания должно встретиться в речи раздела, чтобы
-# визуальная оценка была полной: одно общее слово — ещё не описание схемы.
+# Сколько разных различающих основ описания (звучащих не больше чем в половине
+# разделов) должно встретиться в речи раздела, чтобы визуальная оценка была
+# полной: одно общее слово — ещё не описание схемы, а слова, звучащие почти
+# везде, раздел не выделяют.
 _VISUAL_SATURATION_TERMS = 3
 
 
@@ -67,7 +70,9 @@ def generate_candidates(
     )
     query_tokens = set(normalize_tokens(" ".join(query_parts)))
     textual_stems = _stems(" ".join(query_parts))
-    visual_stems = _stems(entry.visual_summary) - textual_stems
+    visual_stems = {
+        stem for stem in _stems(entry.visual_summary, drop_filler=True) if stem not in textual_stems
+    }
     # Доля описания в содержании страницы: у схемы без текста описание —
     # единственное доказательство, у страницы с богатым текстом — добавка,
     # которая не должна перебивать текст и рождать ложных конкурентов.
@@ -89,10 +94,17 @@ def generate_candidates(
     section_stems = [
         _stems(" ".join(block.text for block in evidence)) for _, evidence in section_documents
     ]
-    visual_idf = {
-        stem: math.log(1.0 + (document_count - frequency + 0.5) / (frequency + 0.5))
+    visual_frequency = {
+        stem: frequency
         for stem in visual_stems
         if (frequency := sum(stem in stems for stems in section_stems))
+    }
+    visual_idf = {
+        stem: math.log(1.0 + (document_count - frequency + 0.5) / (frequency + 0.5))
+        for stem, frequency in visual_frequency.items()
+    }
+    distinctive_stems = {
+        stem for stem, frequency in visual_frequency.items() if frequency * 2 <= document_count
     }
     scored: list[tuple[float, float, float | None, SectionRef, tuple[TranscriptBlock, ...]]] = []
     for (section, evidence), doc_tokens, doc_stems in zip(
@@ -110,7 +122,11 @@ def generate_candidates(
             default=0.0,
         )
         score = lexical + char_score * 2.0
-        visual = _visual_score(visual_idf, doc_stems) * visual_share if visual_stems else None
+        visual = (
+            _visual_score(visual_idf, distinctive_stems, doc_stems) * visual_share
+            if visual_stems
+            else None
+        )
         strength = score + (visual or 0.0) * visual_weight
         scored.append((strength, score, visual, section, evidence))
     ranked = sorted(scored, key=lambda item: (item[0], -item[3].global_section_id), reverse=True)
@@ -151,26 +167,33 @@ def generate_candidates(
     return tuple(result[: limit + 2 * neighbor_radius])
 
 
-def _stems(text: str) -> set[str]:
+def _stems(text: str, *, drop_filler: bool = False) -> set[str]:
     return {
-        token[:_VISUAL_STEM] for token in normalize_tokens(text) if len(token) >= _VISUAL_MIN_TOKEN
+        token[:_VISUAL_STEM]
+        for token in normalize_tokens(text)
+        if len(token) >= _VISUAL_MIN_TOKEN and not (drop_filler and is_visual_filler(token))
     }
 
 
-def _visual_score(visual_idf: dict[str, float], document_stems: set[str]) -> float:
+def _visual_score(
+    visual_idf: dict[str, float], distinctive_stems: set[str], document_stems: set[str]
+) -> float:
     """Насколько речь раздела покрывает описание картинки, 0..1.
 
     Покрытие взвешено по idf среди основ, которые звучат хоть в одном разделе:
     слова описания, которых лектор не произносит нигде («изображение»,
     «стрелка»), ни один раздел не различают и в знаменатель не входят.
-    Полная оценка требует не меньше `_VISUAL_SATURATION_TERMS` общих основ.
+    Полная оценка требует не меньше `_VISUAL_SATURATION_TERMS` общих
+    различающих основ: слова, звучащие в большинстве разделов, покрытие дают,
+    но насыщения — нет, иначе описание из них получило бы 1.0 везде.
     """
-    total = sum(visual_idf.values())
+    total = sum(visual_idf[stem] for stem in sorted(visual_idf))
     if not total:
         return 0.0
-    shared = [stem for stem in visual_idf if stem in document_stems]
+    shared = sorted(stem for stem in visual_idf if stem in document_stems)
     coverage = sum(visual_idf[stem] for stem in shared) / total
-    return coverage * min(1.0, len(shared) / _VISUAL_SATURATION_TERMS)
+    distinctive = sum(stem in distinctive_stems for stem in shared)
+    return coverage * min(1.0, distinctive / _VISUAL_SATURATION_TERMS)
 
 
 def _bm25_score(
