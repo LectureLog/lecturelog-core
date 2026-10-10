@@ -584,11 +584,12 @@ async def test_v2_render_prompt_carries_slide_spellings(tmp_path, prompts_dir):
 
 @pytest.mark.asyncio
 async def test_render_context_covers_unassigned_slides(tmp_path, prompts_dir):
-    """Потерянный слайд обязан подсказывать написание.
+    """Потерянный соседний слайд обязан подсказывать написание.
 
-    Слайд 7 (ENIAC) не привязался именно потому, что ASR дал «Мониак». Если
+    Слайд 2 (ENIAC) не привязался именно потому, что ASR дал «Мониак». Если
     подсказки брать только с привязанных слайдов, круг не разорвать: искажение
-    мешает матчингу, а без матчинга нет подсказки для его исправления.
+    мешает матчингу, а без матчинга нет подсказки для его исправления. Поэтому
+    справочник раздела берёт и страницы ±1 от привязанных.
     """
     srt = tmp_path / "t.srt"
     srt.write_text(
@@ -655,3 +656,192 @@ def test_slide_context_block_lists_only_proper_nouns():
     assert "Fortran" in block
     assert "владение более чем одним" not in block
     assert "Востребованные компетенции" not in block
+
+
+def _scoped_glossary_deck(tmp_path, nouns):
+    """Колода, где у каждой страницы ровно одно имя собственное в каталоге."""
+    from lecturelog.domain.slides import SlideCatalogEntry
+
+    assets = []
+    catalog = {}
+    for num, noun in enumerate(nouns, start=1):
+        path = tmp_path / f"slide{num}.png"
+        path.write_bytes(b"slide")
+        assets.append(
+            SlideAsset(num, path, "document", extracted_text=noun, native_text_quality="good")
+        )
+        catalog[num] = SlideCatalogEntry(num, "content", noun, noun, proper_nouns=(noun,))
+    return assets, catalog
+
+
+def _bound(slide_num, section_id, confidence="probable"):
+    from lecturelog.domain.slides import SlideAssignment
+
+    return SlideAssignment(slide_num, "discussed", section_id, (1,), 1.0, confidence, 1.0, "test")
+
+
+def _unmentioned(slide_num):
+    from lecturelog.domain.slides import SlideAssignment
+
+    return SlideAssignment(
+        slide_num, "unmentioned", None, (), None, "unresolved", 0.0, "no_supported_evidence"
+    )
+
+
+async def _render_prompts_with_alignment(
+    tmp_path, prompts_dir, monkeypatch, sections, assets, assignments, catalog, mode="v2"
+):
+    """Прогоняет структуризатор с заданным результатом выравнивания.
+
+    Возвращает промпты рендера по названию раздела: названия уникальны и
+    попадают в промпт через шаблон, поэтому порядок рендера не важен.
+    """
+    from lecturelog.infrastructure.slides.alignment.service import AlignmentResult
+
+    srt = tmp_path / "t.srt"
+    srt.write_text("1\n00:00:00,000 --> 00:00:30,000\nтекст\n", encoding="utf-8")
+    topics_json = json.dumps([{"title": "Тема", "start": "0:00", "end": "0:30"}])
+    renders = [f"Текст {section['title']}." for section in sections]
+    responses = [topics_json, json.dumps(sections)]
+    if mode != "v2":
+        # legacy-матч слайдов: грубый по темам и точный по подтемам — пустые.
+        responses += ["{}", "{}"]
+    gemini = ScriptedGemini([*responses, *renders])
+    structurizer = _make_structurizer(gemini, prompts_dir)
+    structurizer._document_alignment_mode = mode
+
+    async def align(**_kwargs):
+        return AlignmentResult(tuple(assignments), catalog)
+
+    monkeypatch.setattr(structurizer._document_alignment, "align", align)
+    await structurizer.structurize(
+        srt_path=srt,
+        slide_assets=assets,
+        context=StructurizeContext("audio"),
+        output_dir=tmp_path / "out",
+    )
+    prompts = {}
+    for call in gemini.recorded_calls:
+        for section in sections:
+            if call["prompt"].startswith(f"prompt {section['title']} "):
+                prompts[section["title"]] = call["prompt"]
+    assert set(prompts) == {section["title"] for section in sections}
+    return prompts
+
+
+_THREE_SECTIONS = [
+    {"title": "Первый", "start": "0:00", "end": "0:10"},
+    {"title": "Второй", "start": "0:10", "end": "0:20"},
+    {"title": "Третий", "start": "0:20", "end": "0:30"},
+]
+
+
+@pytest.mark.asyncio
+async def test_render_glossary_is_scoped_to_section_slides_and_neighbours(
+    tmp_path, prompts_dir, monkeypatch
+):
+    """Имена с чужих слайдов не попадают в справочник раздела.
+
+    Регрессия судьи: «Уолли» вместо Alice и «JetBrains» вместо ЯДРО — имена со
+    слайдов из другой части лекции. В справочник раздела идут только слайды,
+    привязанные к нему, и страницы колоды с номером ±1 от них.
+    """
+    nouns = ["Alice", "Bob", "Wally", "Charlie", "ЯДРО", "Kotlin", "JetBrains"]
+    assets, catalog = _scoped_glossary_deck(tmp_path, nouns)
+    assignments = [
+        _bound(1, 0),
+        _unmentioned(2),
+        _unmentioned(3),
+        _unmentioned(4),
+        _bound(5, 2),
+        _unmentioned(6),
+        _unmentioned(7),
+    ]
+
+    prompts = await _render_prompts_with_alignment(
+        tmp_path, prompts_dir, monkeypatch, _THREE_SECTIONS, assets, assignments, catalog
+    )
+
+    first = prompts["Первый"]
+    assert "Alice" in first and "Bob" in first
+    assert not any(name in first for name in ("Wally", "Charlie", "ЯДРО", "JetBrains"))
+    third = prompts["Третий"]
+    assert "Charlie" in third and "ЯДРО" in third and "Kotlin" in third
+    assert not any(name in third for name in ("Alice", "Bob", "Wally", "JetBrains"))
+
+
+@pytest.mark.asyncio
+async def test_section_without_bound_slides_gets_empty_glossary(tmp_path, prompts_dir, monkeypatch):
+    nouns = ["Alice", "Bob", "Wally", "Charlie", "ЯДРО"]
+    assets, catalog = _scoped_glossary_deck(tmp_path, nouns)
+    assignments = [_bound(1, 0), *(_unmentioned(num) for num in (2, 3, 4)), _bound(5, 2)]
+
+    prompts = await _render_prompts_with_alignment(
+        tmp_path, prompts_dir, monkeypatch, _THREE_SECTIONS, assets, assignments, catalog
+    )
+
+    second = prompts["Второй"]
+    assert "Написания имён и терминов из презентации" not in second
+    assert not any(name in second for name in nouns)
+
+
+@pytest.mark.asyncio
+async def test_glossary_counts_section_gallery_slide_as_bound(tmp_path, prompts_dir, monkeypatch):
+    """Слайд в галерее раздела — слайд этого раздела.
+
+    Непривязанный слайд (уверенность unresolved) идёт в галерею раздела с самым
+    сильным доказательством: там его и показывают, там о нём и говорили, так
+    что его написания нужны именно этому разделу.
+    """
+    nouns = ["Alice", "Bob", "Wally", "Charlie", "ЯДРО"]
+    assets, catalog = _scoped_glossary_deck(tmp_path, nouns)
+    assignments = [
+        _unmentioned(1),
+        _unmentioned(2),
+        _bound(3, 1, confidence="unresolved"),
+        _unmentioned(4),
+        _unmentioned(5),
+    ]
+
+    prompts = await _render_prompts_with_alignment(
+        tmp_path, prompts_dir, monkeypatch, _THREE_SECTIONS, assets, assignments, catalog
+    )
+
+    second = prompts["Второй"]
+    assert all(name in second for name in ("Bob", "Wally", "Charlie"))
+    assert "Alice" not in second and "ЯДРО" not in second
+    assert "Wally" not in prompts["Первый"]
+
+
+@pytest.mark.asyncio
+async def test_shadow_mode_scopes_glossary_by_v2_alignment(tmp_path, prompts_dir, monkeypatch):
+    """В shadow рендер идёт по legacy-маршруту, а справочник — по выравниванию v2."""
+    nouns = ["Alice", "Bob", "Wally", "Charlie", "ЯДРО"]
+    assets, catalog = _scoped_glossary_deck(tmp_path, nouns)
+    assignments = [_bound(1, 0), *(_unmentioned(num) for num in (2, 3, 4)), _bound(5, 2)]
+
+    prompts = await _render_prompts_with_alignment(
+        tmp_path,
+        prompts_dir,
+        monkeypatch,
+        _THREE_SECTIONS,
+        assets,
+        assignments,
+        catalog,
+        mode="shadow",
+    )
+
+    assert "Alice" in prompts["Первый"] and "ЯДРО" not in prompts["Первый"]
+    assert not any(name in prompts["Второй"] for name in nouns)
+    assert "ЯДРО" in prompts["Третий"] and "Alice" not in prompts["Третий"]
+
+
+def test_render_prompt_allows_name_fix_only_on_phonetic_similarity():
+    """Правило фонетического сходства живёт в тексте промпта рендера."""
+    from pathlib import Path
+
+    text = (Path(__file__).resolve().parents[2] / "prompts" / "section_v1.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "только при фонетическом сходстве" in text.lower()
