@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from pathlib import Path
+from typing import Any
+
 from lecturelog.config.settings import S3Config, TranscribeConfig
 from lecturelog.domain.media_source import MediaSource, is_video_source
 from lecturelog.domain.ports import (
@@ -10,8 +13,9 @@ from lecturelog.domain.ports import (
     WebhookNotifier,
 )
 from lecturelog.infrastructure.storage.s3_storage import S3Storage
+from lecturelog.infrastructure.transcribe.cache import CachingTranscriber
 from lecturelog.infrastructure.transcribe.deepgram_transcriber import DeepgramTranscriber
-from lecturelog.infrastructure.transcribe.groq_transcriber import GroqTranscriber
+from lecturelog.infrastructure.transcribe.groq_transcriber import WHISPER_MODEL, GroqTranscriber
 from lecturelog.infrastructure.webhook.http_notifier import HttpWebhookNotifier
 
 
@@ -55,7 +59,31 @@ def storage_factory(s3: S3Config) -> Storage:
     )
 
 
-def transcriber_factory(config: TranscribeConfig) -> Transcriber:
+def transcribe_cache_settings(config: TranscribeConfig) -> dict[str, Any]:
+    """Настройки, влияющие на содержимое транскрипта, — часть ключа кеша.
+    Секреты и endpoint-регион (не меняют текст) сюда не входят."""
+    if config.provider == "groq":
+        return {"provider": "groq", "model": WHISPER_MODEL}
+    return {
+        "provider": "deepgram",
+        "model": config.deepgram_model,
+        "language": "auto" if config.deepgram_detect_language else config.deepgram_language,
+        "detect_language": config.deepgram_detect_language,
+        "utt_split": config.deepgram_utt_split,
+    }
+
+
+def transcriber_factory(config: TranscribeConfig, *, cache_dir: Path | None = None) -> Transcriber:
+    """Транскрибер по конфигу; с cache_dir — обёрнутый кешем транскриптов."""
+    transcriber = _build_transcriber(config)
+    if cache_dir is None:
+        return transcriber
+    return CachingTranscriber(
+        transcriber, cache_dir=cache_dir, settings=transcribe_cache_settings(config)
+    )
+
+
+def _build_transcriber(config: TranscribeConfig) -> Transcriber:
     if config.provider == "groq":
         return GroqTranscriber(groq_api_keys=config.groq_keys)
     assert config.deepgram_api_key is not None

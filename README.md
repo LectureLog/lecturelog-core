@@ -358,6 +358,7 @@ python scripts/submit_task.py --base http://my-host:8000/api/v1 status <task_id>
 | `DEEPGRAM_LANGUAGE`    | Язык Deepgram (по умолчанию `ru`). |
 | `DEEPGRAM_DETECT_LANGUAGE` | Автоопределение доминирующего языка (`true`/`false`). При `true` фиксированный `DEEPGRAM_LANGUAGE` не отправляется. |
 | `DEEPGRAM_UTT_SPLIT`   | Порог паузы utterance в секундах (по умолчанию `0.8`). |
+| `TRANSCRIPT_CACHE_DIR` | Кеш транскриптов (перезапуск без повторной транскрипции). По умолчанию `$WORK_DIR/transcript_cache`. Ключ: хеш аудио + провайдер/модель/язык/utt_split. |
 | `OPENROUTER_API_KEY`   | Ключ OpenRouter; LLM-вызовы идут через BYOK Google AI Studio. |
 | `OPENROUTER_BASE_URL`  | Base URL OpenRouter (по умолчанию `https://openrouter.ai/api/v1`). |
 | `VIDEO_TARGET_RESOLUTION` | Целевое разрешение URL-видео: `144..4320` либо `best`; по умолчанию `720`. |

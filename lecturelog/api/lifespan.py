@@ -53,7 +53,12 @@ async def lifespan(app: FastAPI):
     cooldown = ModelCooldown()
     llm = LlmClient(openai_client, cooldown, max_tokens=cfg.llm.max_tokens)
 
-    transcriber = transcriber_factory(cfg.transcribe)
+    # Локальный эфемерный scratch для внутренних стадий пайплайна (не S3).
+    work_dir = Path(os.getenv("WORK_DIR", "/app/data"))
+    # Кеш транскриптов лежит рядом со scratch, но вне каталогов задач: его не сносит
+    # очистка workspace задачи.
+    transcript_cache_dir = cfg.transcribe.cache_dir or work_dir / "transcript_cache"
+    transcriber = transcriber_factory(cfg.transcribe, cache_dir=transcript_cache_dir)
     transcribe_model = (
         "whisper-large-v3" if cfg.transcribe.provider == "groq" else cfg.transcribe.deepgram_model
     )
@@ -145,8 +150,7 @@ async def lifespan(app: FastAPI):
     app.state.storage = storage
     app.state.cookie_store = cookie_store
     app.state.presign_expiry = cfg.s3.presign_expiry
-    # Локальный эфемерный scratch для внутренних стадий пайплайна (не S3).
-    app.state.work_dir = Path(os.getenv("WORK_DIR", "/app/data"))
+    app.state.work_dir = work_dir
     app.state.llm = llm
     app.state.prompts_dir = Path("prompts")
     try:
