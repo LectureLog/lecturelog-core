@@ -166,7 +166,7 @@ def _unbound_or_unmentioned(
     margin: float | None,
     weights: AlignmentWeights,
 ) -> SlideAssignment:
-    """Слайд без уверенной привязки: галерея раздела с самым сильным доказательством или приложение."""
+    """Слайд без уверенной привязки: галерея раздела с сильнейшим доказательством или приложение."""
     strongest = strongest_candidate(pool, weights, preferred=chosen)
     if strongest is None:
         return SlideAssignment(

@@ -2,7 +2,8 @@ import json
 
 import pytest
 
-from lecturelog.domain.slides import SlideAsset, StructurizeContext
+from lecturelog.domain.slides import SlideAsset, SlideAssignment, StructurizeContext
+from lecturelog.infrastructure.slides.alignment.service import AlignmentResult
 from lecturelog.infrastructure.structurize.gemini_structurizer import (
     GeminiStructurizer,
     _parse_json,
@@ -171,6 +172,85 @@ async def test_v2_diagnostics_failure_is_warning_only(tmp_path, prompts_dir, mon
     )
 
     assert result.slide_assignments
+
+
+@pytest.mark.asyncio
+async def test_v2_unbound_slide_lands_in_section_gallery(tmp_path, prompts_dir, monkeypatch):
+    """Непривязанный слайд — в галерее раздела (slide_indices секции), неупомянутый — нет.
+
+    Формат результата прежний: слайд галереи виден только через slide_indices
+    секции, маркера в тексте нет; причина видна в диагностике.
+    """
+    srt = tmp_path / "t.srt"
+    srt.write_text("1\n00:00:00,000 --> 00:00:10,000\ntext\n", encoding="utf-8")
+    assets = []
+    for num in (1, 2):
+        path = tmp_path / f"slide{num}.png"
+        path.write_bytes(f"slide{num}".encode())
+        assets.append(
+            SlideAsset(num, path, "document", extracted_text="text", native_text_quality="good")
+        )
+    gemini = ScriptedGemini(
+        [
+            json.dumps([{"title": "T", "start": "0:00", "end": "0:10"}]),
+            json.dumps([{"title": "S", "start": "0:00", "end": "0:10"}]),
+            "Rendered text.",
+        ]
+    )
+    structurizer = _make_structurizer(gemini, prompts_dir)
+    structurizer._document_alignment_mode = "v2"
+
+    async def align(**_kwargs):
+        return AlignmentResult(
+            (
+                SlideAssignment(
+                    1,
+                    "unbound",
+                    0,
+                    (1,),
+                    None,
+                    "unresolved",
+                    3.0,
+                    "semantic_strong",
+                    status_reason="weak_evidence",
+                ),
+                SlideAssignment(
+                    2,
+                    "unmentioned",
+                    None,
+                    (),
+                    None,
+                    "unresolved",
+                    0.0,
+                    "no_supported_evidence",
+                    status_reason="no_candidates",
+                ),
+            ),
+            {},
+        )
+
+    monkeypatch.setattr(structurizer._document_alignment, "align", align)
+    output_dir = tmp_path / "out"
+    result = await structurizer.structurize(
+        srt_path=srt,
+        slide_assets=assets,
+        context=StructurizeContext("audio"),
+        output_dir=output_dir,
+    )
+
+    gallery, appendix = result.slide_placements
+    assert (gallery.output_kind, gallery.global_section_id) == ("section_gallery", 0)
+    assert appendix.output_kind == "appendix"
+    assert result.topics[0].sections[0].slide_indices == [1]
+    assert "<!-- slide:" not in result.topics[0].sections[0].content
+    diagnostic = json.loads(
+        (output_dir / "document-slide-alignment.json").read_text(encoding="utf-8")
+    )
+    assert [item["status_reason"] for item in diagnostic["assignments"]] == [
+        "weak_evidence",
+        "no_candidates",
+    ]
+    assert diagnostic["placements"][0]["fallback_reason"] == "unbound:weak_evidence"
 
 
 def test_parse_json_strips_code_fence():

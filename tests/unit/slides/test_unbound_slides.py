@@ -10,7 +10,7 @@ import json
 
 import pytest
 
-from lecturelog.domain.slides import SlideAsset, SlideCatalogEntry
+from lecturelog.domain.slides import SlideAsset
 from lecturelog.infrastructure.slides.alignment.anchoring import anchor_assignment
 from lecturelog.infrastructure.slides.alignment.service import DocumentAlignmentService
 
@@ -35,7 +35,11 @@ def _srt(*texts: str) -> str:
 def _layout(count: int) -> list[list[dict[str, object]]]:
     return [
         [
-            {"title": f"Раздел {index}", "start": f"0:{index * 10:02d}", "end": f"0:{index * 10 + 10:02d}"}
+            {
+                "title": f"Раздел {index}",
+                "start": f"0:{index * 10:02d}",
+                "end": f"0:{index * 10 + 10:02d}",
+            }
             for index in range(count)
         ]
     ]
