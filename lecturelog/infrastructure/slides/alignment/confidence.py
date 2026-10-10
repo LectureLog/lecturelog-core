@@ -1,8 +1,44 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Literal
 
 Confidence = Literal["verified", "probable", "unresolved"]
+# Причины, по которым у выбранного кандидата уверенность `unresolved`:
+# подмножество SlideStatusReason из домена, которое выставляет калибровка.
+UnboundReason = Literal["weak_evidence"]
+
+
+@dataclass(frozen=True)
+class Calibration:
+    """Уровень уверенности привязки и, для `unresolved`, его причина.
+
+    Причина заполнена ровно тогда, когда уверенность `unresolved`: такой слайд
+    становится непривязанным, и диагностика должна объяснить почему.
+    """
+
+    confidence: Confidence
+    unbound_reason: UnboundReason | None = None
+
+
+def calibrate(
+    *,
+    semantic_tier: str,
+    margin: float,
+    has_grounded_evidence: bool,
+    has_competing_context: bool,
+    visual_score: float | None = None,
+) -> Calibration:
+    confidence = confidence_from_margin(
+        semantic_tier=semantic_tier,
+        margin=margin,
+        has_grounded_evidence=has_grounded_evidence,
+        has_competing_context=has_competing_context,
+        visual_score=visual_score,
+    )
+    if confidence == "unresolved":
+        return Calibration(confidence, "weak_evidence")
+    return Calibration(confidence)
 
 
 def confidence_from_margin(
