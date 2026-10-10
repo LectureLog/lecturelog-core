@@ -21,6 +21,13 @@ class AlignmentWeights:
     lexical_weight: float = 1.0
     visual_weight: float = 3.0
     progressive_same_section_bonus: float = 0.75
+    # Порог margin выбора: ниже него слайд непривязанный с причиной
+    # `stronger_competitor` на любом уровне уверенности. Margin выбора пути
+    # неотрицателен, поэтому срабатывает только отрицательный competition_margin —
+    # конкурент из другого раздела лексически сильнее. Допуск −5 отсекает шум
+    # лексики (верный выбор получает до −0.4), а реальные промахи прогонов A–L
+    # лежат на −16…−22; точное значение калибруется по базовой линии этапа.
+    min_margin: float = -5.0
 
 
 def align_sequence(
@@ -66,15 +73,20 @@ def align_sequence(
             # Путь пропустил слайд. Если у него всё же есть кандидат с
             # доказательством, пропуск — цена порядка колоды, а не признак того,
             # что лектор слайд не обсуждал.
+            pool = candidates.get(slide_num, ())
+            reason: SlideStatusReason = "deck_order_conflict"
+            weak = [
+                c
+                for c in pool
+                if c.competition_margin is not None and c.competition_margin < weights.min_margin
+            ]
+            if weak:
+                # Конкурент сильнее выбора судьи — это более информативная причина,
+                # чем конфликт порядка, и его раздел должен участвовать в выборе галереи.
+                reason = "stronger_competitor"
+                pool = (*pool, *(rival for c in weak for rival in c.competitors))
             assignments.append(
-                _unbound_or_unmentioned(
-                    slide_num,
-                    candidates.get(slide_num, ()),
-                    None,
-                    "deck_order_conflict",
-                    None,
-                    weights,
-                )
+                _unbound_or_unmentioned(slide_num, pool, None, reason, None, weights)
             )
             continue
         constrained_total, _ = _solve(
@@ -98,6 +110,7 @@ def align_sequence(
             has_grounded_evidence=bool(chosen.evidence_block_ids and chosen.evidence_quote),
             has_competing_context=chosen.competition_margin is not None,
             visual_score=chosen.visual_score,
+            min_margin=weights.min_margin,
         )
         if calibration.unbound_reason is None:
             assignments.append(
@@ -113,10 +126,15 @@ def align_sequence(
                 )
             )
             continue
+        pool = candidates.get(slide_num, ())
+        if calibration.unbound_reason == "stronger_competitor":
+            # Конкуренты в выбор пути не входят, но галерея должна достаться
+            # разделу с самым сильным доказательством — возможно, конкуренту.
+            pool = (*pool, *chosen.competitors)
         assignments.append(
             _unbound_or_unmentioned(
                 slide_num,
-                candidates.get(slide_num, ()),
+                pool,
                 chosen,
                 calibration.unbound_reason,
                 margin,
@@ -189,8 +207,26 @@ def _unbound_or_unmentioned(
         None,
         "unresolved",
         _candidate_score(strongest, weights),
-        _reason_code(strongest, margin),
+        _unbound_reason_code(strongest, chosen, margin),
         status_reason=unbound_reason,
+    )
+
+
+def _unbound_reason_code(
+    strongest: SlideCandidate, chosen: SlideCandidate | None, margin: float | None
+) -> str:
+    """reason_code описывает сильнейшего кандидата, куда ушёл слайд.
+
+    Margin (min из path- и competition-margin) посчитан для выбора пути, поэтому
+    у сильнейшего он указан, только
+    если это и есть выбор; иначе выбор пути и его margin записаны отдельно.
+    """
+    if chosen is None or strongest is chosen:
+        return _reason_code(strongest, margin)
+    return (
+        f"{_reason_code(strongest, None)}"
+        f":path_section={chosen.global_section_id}"
+        f":path_min_margin={'none' if margin is None else f'{margin:.3f}'}"
     )
 
 

@@ -100,17 +100,24 @@ class SlideCandidate:
     semantic_tier: Literal["explicit", "strong", "weak", "none"] = "none"
     visual_score: float | None = None
     competition_margin: float | None = None
+    # Кандидаты других разделов, с которыми сравнивался выбор при расчёте
+    # competition_margin. В выбор пути не входят: нужны, чтобы непривязанный
+    # из-за более сильного конкурента слайд ушёл в галерею этого конкурента.
+    competitors: tuple[SlideCandidate, ...] = ()
 
 
 # Почему слайд не привязан к месту речи (см. GLOSSARY.md):
 # - непривязанный (match_status="unbound") — кандидат с доказательством есть, но
 #   уверенности не хватает: `weak_evidence` — доказательство слабое,
-#   `deck_order_conflict` — путь по порядку колоды пропустил слайд;
+#   `deck_order_conflict` — путь по порядку колоды пропустил слайд,
+#   `stronger_competitor` — кандидат другого раздела совпадает с речью сильнее
+#   выбранного (margin ниже порога);
 # - неупомянутый (match_status="unmentioned") — `no_candidates` — ни одного
 #   кандидата с доказательством, `service_role` — служебная пустая страница.
 SlideStatusReason = Literal[
     "weak_evidence",
     "deck_order_conflict",
+    "stronger_competitor",
     "no_candidates",
     "service_role",
 ]

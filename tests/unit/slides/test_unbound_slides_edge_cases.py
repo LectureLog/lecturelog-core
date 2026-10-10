@@ -165,7 +165,11 @@ def test_инварианты_статусов_на_случайных_вход�
                 assert item.global_section_id is not None
                 assert item.anchor_s is None
                 assert item.assignment_confidence == "unresolved"
-                assert item.status_reason in {"weak_evidence", "deck_order_conflict"}
+                assert item.status_reason in {
+                    "weak_evidence",
+                    "deck_order_conflict",
+                    "stronger_competitor",
+                }
                 assert item.score > 0
             elif item.match_status == "unmentioned":
                 assert item.global_section_id is None
