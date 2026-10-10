@@ -115,12 +115,15 @@ def test_отрицательный_margin_ниже_порога_действу�
     assert (item.match_status, item.assignment_confidence) == ("unbound", "unresolved")
 
 
-def test_calibrate_без_min_margin_ведёт_себя_по_старому_для_отрицательного_margin():
-    """Обратная совместимость вызова: дефолт 0.0 не должен включать правило для margin == 0."""
-    result = calibrate(
-        semantic_tier="explicit", margin=0.0, has_grounded_evidence=True, has_competing_context=True
-    )
-    assert result.unbound_reason is None
+def test_calibrate_требует_min_margin_явно_без_дефолта():
+    """Порог берётся из AlignmentWeights; молчаливый дефолт 0.0 расходился бы с ним."""
+    with pytest.raises(TypeError):
+        calibrate(  # type: ignore[call-arg]
+            semantic_tier="explicit",
+            margin=0.0,
+            has_grounded_evidence=True,
+            has_competing_context=True,
+        )
 
 
 def test_calibrate_не_падает_на_nan_margin_и_не_объявляет_конкурента():

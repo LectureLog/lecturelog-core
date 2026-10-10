@@ -3,10 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
+from lecturelog.domain.slides import SlideStatusReason
+
 Confidence = Literal["verified", "probable", "unresolved"]
-# Причины, по которым у выбранного кандидата уверенность `unresolved`:
-# подмножество SlideStatusReason из домена, которое выставляет калибровка.
-UnboundReason = Literal["weak_evidence", "stronger_competitor"]
 
 
 @dataclass(frozen=True)
@@ -18,7 +17,7 @@ class Calibration:
     """
 
     confidence: Confidence
-    unbound_reason: UnboundReason | None = None
+    unbound_reason: SlideStatusReason | None = None
 
 
 def calibrate(
@@ -28,7 +27,7 @@ def calibrate(
     has_grounded_evidence: bool,
     has_competing_context: bool,
     visual_score: float | None = None,
-    min_margin: float = 0.0,
+    min_margin: float,
     model_confirmed: bool = False,
 ) -> Calibration:
     # Margin ниже порога значит, что другой раздел совпадает с речью сильнее
