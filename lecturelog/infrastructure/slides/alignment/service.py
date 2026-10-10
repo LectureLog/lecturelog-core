@@ -363,7 +363,11 @@ class DocumentAlignmentService:
 
     @staticmethod
     def _lexical_ground(entry, candidates, blocks, visual_weight: float) -> SlideCandidate | None:
-        # Backwards-compatible, deterministic path for tests/offline operation.
+        """Детерминированная привязка без судьи: для офлайн-режима и тестов.
+
+        Берёт блок раздела, текст которого подтверждает страницу, и ставит
+        потолок `strong`: модель совпадение не подтверждала.
+        """
         by_id = {block.block_id: block for block in blocks}
         matches = []
         for candidate in candidates:
