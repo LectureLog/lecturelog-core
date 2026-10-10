@@ -263,3 +263,75 @@ def test_factory_wraps_transcriber_only_when_cache_dir_given(monkeypatch, tmp_pa
 
     assert not isinstance(transcriber_factory(config), CachingTranscriber)
     assert isinstance(transcriber_factory(config, cache_dir=tmp_path), CachingTranscriber)
+
+
+def _entry_dir(tmp_path: Path) -> Path:
+    (entry,) = [p for p in (tmp_path / "cache").iterdir() if p.is_dir()]
+    return entry
+
+
+@pytest.mark.asyncio
+async def test_concurrent_writer_tmp_name_does_not_collide(tmp_path):
+    # другая задача с тем же ключом прямо сейчас пишет свой tmp под старым общим именем
+    inner = CountingTranscriber()
+    transcriber = _cached(inner, tmp_path)
+    await _run(tmp_path, transcriber, "t0")
+    entry = _entry_dir(tmp_path)
+    shutil.rmtree(entry)
+    entry.mkdir()
+    (entry / ".transcript.srt.tmp").mkdir()  # занятое общее имя
+
+    await _run(tmp_path, transcriber, "t1")
+    await _run(tmp_path, transcriber, "t2")
+
+    assert inner.calls == 2  # t0 и t1; t2 уже попал в кеш
+
+
+@pytest.mark.asyncio
+async def test_failed_store_leaves_no_tmp_files(tmp_path):
+    inner = CountingTranscriber()
+    transcriber = _cached(inner, tmp_path)
+    await _run(tmp_path, transcriber, "t0")
+    entry = _entry_dir(tmp_path)
+    shutil.rmtree(entry)
+    entry.mkdir()
+    (entry / "transcript.srt").mkdir()  # replace упадёт
+
+    await _run(tmp_path, transcriber, "t1")
+
+    assert [p.name for p in entry.iterdir()] == ["transcript.srt"]
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="нужен ffmpeg")
+@pytest.mark.asyncio
+async def test_extracted_audio_is_byte_deterministic(tmp_path):
+    # ключ видео-задач = хеш извлечённой дорожки, поэтому извлечение обязано быть детерминированным
+    import asyncio
+
+    from lecturelog.infrastructure.media.video_ingestor import VideoIngestor
+
+    video = tmp_path / "v.mp4"
+    proc = await asyncio.create_subprocess_exec(
+        *(
+            [
+                "ffmpeg",
+                "-loglevel",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:duration=2",
+            ]
+        ),
+        *(["-f", "lavfi", "-i", "color=c=red:s=64x64:d=2", "-shortest"]),
+        str(video),
+    )
+    await proc.wait()
+    ingestor = VideoIngestor(cookie_store=None, target_resolution="720")
+
+    first = await ingestor.extract_audio(video, tmp_path / "x1")
+    await asyncio.sleep(1.1)  # метки времени в контейнере не должны попадать в байты
+    second = await ingestor.extract_audio(video, tmp_path / "x2")
+
+    assert first.read_bytes() == second.read_bytes()
