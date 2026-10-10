@@ -161,6 +161,8 @@ async def lifespan(app: FastAPI):
             repository=repo,
             work_root=work_dir,
             failed_retention=timedelta(hours=cfg.worker.failed_retention_hours),
+            transcript_cache_dir=transcript_cache_dir,
+            cache_retention=timedelta(days=cfg.worker.transcript_cache_retention_days),
         )
         sweeper_task = asyncio.create_task(
             _sweep_forever(sweeper, cfg.worker.sweep_interval_minutes * 60)

@@ -19,6 +19,8 @@ from lecturelog.domain.ports import SlideProvider, TaskRepository
 logger = logging.getLogger(__name__)
 
 _TASK_ID_RE = re.compile(r"[0-9a-f]{32}\Z")
+# Запись кеша транскриптов: каталог с именем-хешем sha256.
+_CACHE_ENTRY_RE = re.compile(r"[0-9a-f]{64}\Z")
 
 # Служебный marker терминального состояния внутри workspace задачи: TTL считается по нему,
 # а не по mtime медиафайлов. Каталоги-соседи задач (results_tmp, кеш транскриптов) sweeper
@@ -70,6 +72,7 @@ class SweepResult:
     scanned: int = 0
     deleted: int = 0
     skipped: int = 0
+    cache_deleted: int = 0
 
 
 class WorkDirSweeper:
@@ -77,6 +80,11 @@ class WorkDirSweeper:
 
     Удаляет только каталоги задач в статусе FAILED, чей marker старше срока хранения.
     PENDING/PROCESSING/DONE/INTERRUPTED и каталоги без строки в БД не трогает.
+
+    Если задан `transcript_cache_dir` с `cache_retention`, удаляет и записи кеша
+    транскриптов, не использовавшиеся дольше срока (по mtime записи: кеш
+    обновляет его при каждом попадании). Срок кеша не меньше срока workspace
+    упавшей задачи - это проверяет конфиг, - иначе перезапуск не нашёл бы транскрипт.
     """
 
     def __init__(
@@ -85,11 +93,16 @@ class WorkDirSweeper:
         work_root: Path,
         failed_retention: timedelta,
         clock: Clock = utc_now,
+        *,
+        transcript_cache_dir: Path | None = None,
+        cache_retention: timedelta | None = None,
     ):
         self._repo = repository
         self._root = work_root
         self._retention = failed_retention
         self._clock = clock
+        self._cache_dir = transcript_cache_dir
+        self._cache_retention = cache_retention
         self._lock = asyncio.Lock()
 
     async def sweep(self) -> SweepResult:
@@ -115,13 +128,45 @@ class WorkDirSweeper:
                     result.deleted += 1
                 else:
                     result.skipped += 1
+            result.cache_deleted = await self._sweep_cache()
         logger.info(
-            "Sweeper: scanned=%d deleted=%d skipped=%d",
+            "Sweeper: scanned=%d deleted=%d skipped=%d cache_deleted=%d",
             result.scanned,
             result.deleted,
             result.skipped,
+            result.cache_deleted,
         )
         return result
+
+    async def _sweep_cache(self) -> int:
+        """Удалить записи кеша транскриптов старше срока; сбой записи проход не прерывает."""
+        if self._cache_dir is None or self._cache_retention is None:
+            return 0
+        try:
+            entries = await asyncio.to_thread(lambda: sorted(self._cache_dir.iterdir()))
+        except OSError as exc:
+            if not isinstance(exc, FileNotFoundError):
+                logger.warning("Sweeper: не прочитан кеш транскриптов %s: %s", self._cache_dir, exc)
+            return 0
+        now = self._clock()
+        deleted = 0
+        for entry in entries:
+            try:
+                if (
+                    not _CACHE_ENTRY_RE.fullmatch(entry.name)
+                    or entry.is_symlink()
+                    or not entry.is_dir()
+                ):
+                    continue
+                used_at = datetime.fromtimestamp(entry.stat().st_mtime, UTC)
+                if now - used_at < self._cache_retention:
+                    continue
+                await asyncio.to_thread(shutil.rmtree, entry)
+                logger.info("Sweeper: удалена устаревшая запись кеша транскриптов %s", entry.name)
+                deleted += 1
+            except Exception as exc:  # ошибка одной записи не останавливает проход
+                logger.warning("Sweeper: сбой на записи кеша %s: %s", entry, exc)
+        return deleted
 
     async def _sweep_one(self, entry: Path) -> bool:
         if not _safe_task_dir(entry, self._root):
