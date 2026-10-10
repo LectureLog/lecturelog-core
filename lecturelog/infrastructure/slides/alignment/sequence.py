@@ -85,7 +85,9 @@ def align_sequence(
                 # чем конфликт порядка, и его раздел должен участвовать в выборе галереи.
                 reason = "stronger_competitor"
                 pool = (*pool, *(rival for c in weak for rival in c.competitors))
-            assignments.append(_unbound_or_unmentioned(slide_num, pool, None, reason, None, weights))
+            assignments.append(
+                _unbound_or_unmentioned(slide_num, pool, None, reason, None, weights)
+            )
             continue
         constrained_total, _ = _solve(
             slide_nums,
@@ -215,7 +217,8 @@ def _unbound_reason_code(
 ) -> str:
     """reason_code описывает сильнейшего кандидата, куда ушёл слайд.
 
-    Margin (min из path- и competition-margin) посчитан для выбора пути, поэтому у сильнейшего он указан, только
+    Margin (min из path- и competition-margin) посчитан для выбора пути, поэтому
+    у сильнейшего он указан, только
     если это и есть выбор; иначе выбор пути и его margin записаны отдельно.
     """
     if chosen is None or strongest is chosen:
