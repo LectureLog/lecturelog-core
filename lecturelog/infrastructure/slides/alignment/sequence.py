@@ -108,7 +108,7 @@ def align_sequence(
             if chosen.competition_margin is not None
             else path_margin
         )
-        best_score = _candidate_score(chosen, weights)
+        best_score = candidate_score(chosen, weights)
         calibration = calibrate(
             semantic_tier=chosen.semantic_tier,
             margin=margin,
@@ -159,7 +159,7 @@ def strongest_candidate(
 ) -> SlideCandidate | None:
     """Кандидат с самым сильным доказательством — его раздел получает непривязанный слайд.
 
-    Сила доказательства — та же оценка `_candidate_score`, что и в выборе пути:
+    Сила доказательства — та же оценка `candidate_score`, что и в выборе пути:
     `lexical_score * lexical_weight + бонус semantic_tier + visual_score * visual_weight`.
     Порядок колоды в неё не входит: он подсказка для пути, а не свойство
     доказательства. Доказательством считается только кандидат, который сам по
@@ -169,14 +169,14 @@ def strongest_candidate(
     evidence = [
         candidate
         for candidate in pool
-        if _candidate_score(candidate, weights) > weights.unmatched_score
+        if candidate_score(candidate, weights) > weights.unmatched_score
     ]
     if not evidence:
         return None
     return max(
         evidence,
         key=lambda candidate: (
-            _candidate_score(candidate, weights),
+            candidate_score(candidate, weights),
             candidate is preferred,
             -candidate.global_section_id,
         ),
@@ -213,7 +213,7 @@ def _unbound_or_unmentioned(
         # Галерея не привязана к месту речи — якоря нет.
         None,
         "unresolved",
-        _candidate_score(strongest, weights),
+        candidate_score(strongest, weights),
         _unbound_reason_code(strongest, chosen, margin),
         status_reason=unbound_reason,
         visual_contribution=_visual_contribution(strongest, weights),
@@ -282,7 +282,7 @@ def _solve(
         for previous_section, (base_score, path) in states.items():
             for option in options:
                 section = option.global_section_id if option else previous_section
-                score = base_score + _candidate_score(option, weights)
+                score = base_score + candidate_score(option, weights)
                 if option is not None and previous_section is not None:
                     delta = option.global_section_id - previous_section
                     if delta < 0:
@@ -298,17 +298,29 @@ def _solve(
     return max(states.values(), key=lambda state: state[0])
 
 
-def _candidate_score(candidate: SlideCandidate | None, weights: AlignmentWeights) -> float:
+def candidate_score(
+    candidate: SlideCandidate | None,
+    weights: AlignmentWeights,
+    *,
+    with_verdict: bool = True,
+) -> float:
+    """Сила доказательства кандидата — единая формула пути DP и competition_margin.
+
+    `lexical_score * lexical_weight + visual_score * visual_weight` плюс, при
+    `with_verdict`, бонус `semantic_tier`. Без бонуса сравниваются кандидаты, у
+    которых судьи не было (конкуренты из retrieval).
+    """
     if candidate is None:
         return weights.unmatched_score
-    bonus = {
-        "explicit": weights.explicit_bonus,
-        "strong": weights.strong_bonus,
-        "weak": 0.0,
-        "none": -1.0,
-    }[candidate.semantic_tier]
-    return (
+    score = (
         candidate.lexical_score * weights.lexical_weight
-        + bonus
         + (candidate.visual_score or 0.0) * weights.visual_weight
     )
+    if with_verdict:
+        score += {
+            "explicit": weights.explicit_bonus,
+            "strong": weights.strong_bonus,
+            "weak": 0.0,
+            "none": -1.0,
+        }[candidate.semantic_tier]
+    return score

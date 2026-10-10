@@ -35,7 +35,11 @@ from lecturelog.infrastructure.slides.alignment.semantic import (
     parse_semantic_match,
     validate_semantic_response,
 )
-from lecturelog.infrastructure.slides.alignment.sequence import AlignmentWeights, align_sequence
+from lecturelog.infrastructure.slides.alignment.sequence import (
+    AlignmentWeights,
+    align_sequence,
+    candidate_score,
+)
 from lecturelog.infrastructure.srt import parse_srt_blocks, parse_srt_time
 
 logger = logging.getLogger(__name__)
@@ -369,7 +373,7 @@ class DocumentAlignmentService:
         by_id = {block.block_id: block for block in blocks}
         matches = []
         for candidate in candidates:
-            if _evidence_strength(candidate, weights) <= 1.0:
+            if candidate_score(candidate, weights, with_verdict=False) <= 1.0:
                 continue
             for block_id in candidate.evidence_block_ids:
                 block = by_id[block_id]
@@ -411,8 +415,8 @@ class DocumentAlignmentService:
         # Отрыв считается по силе совпадения с речью — лексика плюс описание
         # картинки, — без бонуса вердикта: у конкурентов судьи не было.
         margin = (
-            _evidence_strength(candidate, weights)
-            - max(_evidence_strength(item, weights) for item in competitors)
+            candidate_score(candidate, weights, with_verdict=False)
+            - max(candidate_score(item, weights, with_verdict=False) for item in competitors)
             if competitors
             else None
         )
@@ -537,11 +541,6 @@ class DocumentAlignmentService:
         if not refs:
             raise ValueError("section timeline is empty")
         return tuple(refs)
-
-
-def _evidence_strength(candidate: SlideCandidate, weights: AlignmentWeights) -> float:
-    """Совпадение кандидата с речью без вердикта судьи: лексика и описание картинки."""
-    return candidate.lexical_score + (candidate.visual_score or 0.0) * weights.visual_weight
 
 
 def _is_supported_image(path: Path) -> bool:
