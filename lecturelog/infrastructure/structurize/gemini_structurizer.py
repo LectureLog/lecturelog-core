@@ -9,12 +9,75 @@ from typing import Any
 
 from lecturelog.domain.models import Section, Topic
 from lecturelog.domain.ports import ProgressCallback, Structurizer, UsageCallback
+from lecturelog.domain.slides import (
+    SlideAsset,
+    SlideAssignment,
+    SlideCatalogEntry,
+    SlidePlacement,
+    StructurizeContext,
+    StructurizeResult,
+)
 from lecturelog.infrastructure.llm.llm_client import LlmClient
-from lecturelog.infrastructure.srt import extract_srt_fragment, format_time
+from lecturelog.infrastructure.slides.alignment.anchoring import anchor_assignment
+from lecturelog.infrastructure.slides.alignment.catalog import native_text_fallback
+from lecturelog.infrastructure.slides.alignment.diagnostics import write_diagnostic
+from lecturelog.infrastructure.slides.alignment.service import (
+    AlignmentTuning,
+    DocumentAlignmentService,
+)
+from lecturelog.infrastructure.srt import (
+    extract_srt_fragment,
+    format_srt_seconds,
+    format_time,
+    parse_srt_blocks,
+    parse_srt_time,
+)
 from lecturelog.infrastructure.structurize.slide_backfill import backfill_missing_slides
 from lecturelog.infrastructure.structurize.slide_mapping import normalize_slide_mapping
 
 logger = logging.getLogger(__name__)
+
+
+def _repair_section_timeline(topics_sections: list[list[dict[str, Any]]], srt_content: str) -> None:
+    """Чинит секции, у которых сплиттер выдал end <= start.
+
+    Битая граница обходится дорого: ffmpeg падает на нарезке («-to value smaller
+    than -ss») уже после того, как потрачены транскрипция и все LLM-стадии, а
+    выравнивание слайдов отбрасывает всю колоду разом (fail-closed по
+    «invalid section timeline»). Чиним по соседям — конец битой секции берём из
+    начала следующей, а для последней секции из конца транскрипта, — потому что
+    содержание секции при этом уже отрендерено и терять его незачем.
+    """
+
+    flat = [section for sections in topics_sections for section in sections]
+    if not flat:
+        return
+
+    transcript_end = max((block.end_s for block in parse_srt_blocks(srt_content)), default=0.0)
+    for index, section in enumerate(flat):
+        start = parse_srt_time(str(section["start"]))
+        end = parse_srt_time(str(section["end"]))
+        if end > start:
+            continue
+
+        repaired = next(
+            (
+                candidate
+                for candidate in (
+                    *(parse_srt_time(str(item["start"])) for item in flat[index + 1 :]),
+                    transcript_end,
+                )
+                if candidate > start
+            ),
+            start + 1.0,
+        )
+        logger.warning(
+            "секция %r имеет end <= start (%s → %s); конец исправлен по соседям",
+            section.get("title"),
+            section["start"],
+            section["end"],
+        )
+        section["end"] = format_srt_seconds(repaired)
 
 
 def _parse_json(raw_text: str) -> Any:
@@ -23,6 +86,33 @@ def _parse_json(raw_text: str) -> Any:
         lines = [line for line in text.splitlines() if not line.startswith("```")]
         text = "\n".join(lines).strip()
     return json.loads(text)
+
+
+def _slide_context_block(entries: list[SlideCatalogEntry]) -> str:
+    """Справочник написаний имён собственных со слайдов для рендера.
+
+    ASR коверкает имена собственные и аббревиатуры («Мониак» вместо ENIAC), а на
+    слайде они записаны верно. Блок даёт рендеру эти написания и прямо запрещает
+    переносить в конспект то, чего не было в речи, — иначе исправление опечаток
+    превратится в пересказ слайдов.
+    """
+    names = dict.fromkeys(
+        value.strip()
+        for entry in entries
+        for value in entry.proper_nouns
+        if value and value.strip()
+    )
+    if not names:
+        return ""
+    return (
+        "\n## Написания имён и терминов из презентации\n\n"
+        "Ниже — имена, названия и аббревиатуры в том написании, как они приведены"
+        " на слайдах. Транскрипт получен распознаванием речи и мог их исказить:"
+        " если в тексте встречается явно искажённый вариант одного из них, пиши"
+        " как здесь.\n"
+        "Это справочник написаний, а не источник содержания: не добавляй в"
+        " конспект факты со слайдов, которых не было в речи лектора.\n\n" + ", ".join(names) + "\n"
+    )
 
 
 async def _emit_progress(on_progress: ProgressCallback | None, value: int) -> None:
@@ -54,6 +144,10 @@ class GeminiStructurizer(Structurizer):
         effort_split: str,
         effort_subsplit: str,
         effort_render: str,
+        effort_slide_match: str = "low",
+        slide_match_models: list[str] | None = None,
+        document_alignment_mode: str = "legacy",
+        document_alignment_tuning: AlignmentTuning = AlignmentTuning(),
     ) -> None:
         self._gemini = gemini_client
         self._split_models = split_models
@@ -65,6 +159,15 @@ class GeminiStructurizer(Structurizer):
         self._effort_split = effort_split
         self._effort_subsplit = effort_subsplit
         self._effort_render = effort_render
+        self._effort_slide_match = effort_slide_match
+        self._document_alignment_mode = document_alignment_mode
+        self._document_alignment = DocumentAlignmentService(
+            llm=gemini_client,
+            models=slide_match_models or subsplit_models,
+            effort=effort_slide_match,
+            prompts_dir=self._prompts_dir,
+            tuning=document_alignment_tuning,
+        )
 
     def _read_prompt(self, filename: str) -> str:
         return (self._prompts_dir / filename).read_text(encoding="utf-8")
@@ -173,6 +276,7 @@ class GeminiStructurizer(Structurizer):
         slide_indices: list[int],
         slide_bytes: list[bytes],
         semaphore: asyncio.Semaphore,
+        slide_context: str = "",
         on_usage: UsageCallback | None = None,
     ) -> tuple[int, Section]:
         title = str(section_data["title"])
@@ -181,6 +285,8 @@ class GeminiStructurizer(Structurizer):
 
         fragment = extract_srt_fragment(srt_content, start, end)
         prompt = section_prompt_template.format(title=title, start=start, end=end)
+        if slide_context:
+            prompt = f"{prompt}\n{slide_context}"
         prompt = f"{prompt}\n{fragment}"
 
         related_images = [
@@ -211,14 +317,28 @@ class GeminiStructurizer(Structurizer):
     async def structurize(
         self,
         srt_path: Path,
-        slide_images: list[Path],
         output_dir: Path,
+        slide_assets: list[SlideAsset] | None = None,
+        context: StructurizeContext | None = None,
         on_progress: ProgressCallback | None = None,
         on_usage: UsageCallback | None = None,
-    ) -> list[Topic]:
+        slide_images: list[Path] | None = None,
+    ) -> StructurizeResult:
+        if slide_assets is None:
+            slide_assets = [
+                SlideAsset(
+                    slide_num=index,
+                    path=path,
+                    origin="document",
+                    extracted_text="",
+                    native_text_quality="none",
+                )
+                for index, path in enumerate(slide_images or [], start=1)
+            ]
+        context = context or StructurizeContext(source_kind="audio")
         output_dir.mkdir(parents=True, exist_ok=True)
         srt_content = srt_path.read_text(encoding="utf-8")
-        slide_bytes = [path.read_bytes() for path in slide_images]
+        slide_bytes = [asset.path.read_bytes() for asset in slide_assets]
 
         # ── Этап 1: Topic split (0% → 10%) ─────────────────────────
         await _emit_progress(on_progress, 2)
@@ -260,11 +380,45 @@ class GeminiStructurizer(Structurizer):
         subsplit_results.sort(key=lambda x: x[0])
 
         topics_sections: list[list[dict[str, Any]]] = [sections for _, sections in subsplit_results]
+        _repair_section_timeline(topics_sections, srt_content)
+
+        v2_assignments: tuple[SlideAssignment, ...] = ()
+        v2_catalog: dict[int, SlideCatalogEntry] = {}
+        if slide_assets and self._document_alignment_mode in {"shadow", "v2"}:
+            try:
+                alignment = await self._document_alignment.align(
+                    assets=slide_assets,
+                    section_layout=topics_sections,
+                    srt_content=srt_content,
+                    on_usage=on_usage,
+                )
+                v2_assignments = alignment.assignments
+                v2_catalog = alignment.catalog
+            except Exception as error:  # noqa: BLE001 - explicit outer fail-safe
+                logger.exception(
+                    "document alignment %s failed: %s",
+                    self._document_alignment_mode,
+                    error,
+                )
+                if self._document_alignment_mode == "v2":
+                    v2_assignments = tuple(
+                        SlideAssignment(
+                            asset.slide_num,
+                            "unmentioned",
+                            None,
+                            (),
+                            None,
+                            "unresolved",
+                            0.0,
+                            "alignment_error",
+                        )
+                        for asset in slide_assets
+                    )
 
         # ── Этап 3: Slide match (30% → 50%) ────────────────────────
         topic_slide_mapping: list[dict[int, list[int]]] = [{} for _ in topics_data]
 
-        if slide_images:
+        if slide_assets and self._document_alignment_mode != "v2":
             # 3a. Грубый match: темы → слайды (1 вызов)
             rough_prompt = self._read_prompt("slide_match_topics_v1.md")
             topics_json = json.dumps(topics_data, ensure_ascii=False)
@@ -315,9 +469,27 @@ class GeminiStructurizer(Structurizer):
 
         await _emit_progress(on_progress, 50)
 
+        if self._document_alignment_mode == "v2":
+            for assignment in v2_assignments:
+                if assignment.match_status != "discussed" or assignment.global_section_id is None:
+                    continue
+                global_id = 0
+                for topic_index, sections in enumerate(topics_sections):
+                    for local_index, _section in enumerate(sections):
+                        if global_id == assignment.global_section_id:
+                            topic_slide_mapping[topic_index].setdefault(local_index, []).append(
+                                assignment.slide_num
+                            )
+                        global_id += 1
+
         # ── Этап 4: Render (50% → 100%) ────────────────────────────
         section_prompt_template = self._read_prompt("section_v1.md")
         render_sem = asyncio.Semaphore(self._concurrency_render)
+
+        # Написания берём со всей колоды, а не только с привязанных слайдов:
+        # слайд теряется как раз тогда, когда ASR исказил его термин, и без него
+        # подсказка не дойдёт именно туда, где нужна (ENIAC → «Мониак»).
+        slide_context = _slide_context_block([v2_catalog[num] for num in sorted(v2_catalog)])
 
         render_tasks = []
         global_idx = 0
@@ -335,7 +507,10 @@ class GeminiStructurizer(Structurizer):
                             srt_content=srt_content,
                             section_prompt_template=section_prompt_template,
                             slide_indices=section_slides,
-                            slide_bytes=slide_bytes,
+                            slide_bytes=slide_bytes
+                            if self._document_alignment_mode != "v2"
+                            else [],
+                            slide_context=slide_context,
                             semaphore=render_sem,
                             on_usage=on_usage,
                         )
@@ -384,8 +559,133 @@ class GeminiStructurizer(Structurizer):
             )
 
         # ── Страховка: вставляем слайды, потерянные LLM ──────
-        if slide_images:
-            backfill_missing_slides(result, len(slide_images))
+        if slide_assets and self._document_alignment_mode != "v2":
+            backfill_missing_slides(result, len(slide_assets))
 
         await _emit_progress(on_progress, 100)
-        return result
+        if self._document_alignment_mode == "v2":
+            placements: list[SlidePlacement] = []
+            assets_by_num = {asset.slide_num: asset for asset in slide_assets}
+            flat_sections = [section for topic in result for section in topic.sections]
+            for assignment in v2_assignments:
+                if assignment.match_status == "duplicate":
+                    placements.append(
+                        SlidePlacement(
+                            assignment.slide_num,
+                            "suppressed",
+                            None,
+                            anchor_confidence="none",
+                            fallback_reason=assignment.reason_code,
+                        )
+                    )
+                    continue
+                entry_result = native_text_fallback(assets_by_num[assignment.slide_num])
+                if assignment.global_section_id is not None and assignment.global_section_id < len(
+                    flat_sections
+                ):
+                    section = flat_sections[assignment.global_section_id]
+                    section.content, placement = anchor_assignment(
+                        assignment,
+                        entry_result.entry,
+                        section.content,
+                    )
+                else:
+                    placement = SlidePlacement(
+                        assignment.slide_num,
+                        "appendix",
+                        None,
+                        anchor_confidence="none",
+                        fallback_reason=assignment.reason_code,
+                    )
+                placements.append(placement)
+            for section_id, section in enumerate(flat_sections):
+                section.slide_indices = sorted(
+                    placement.slide_num
+                    for placement in placements
+                    if placement.global_section_id == section_id
+                    and placement.output_kind in {"inline", "section_gallery"}
+                )
+            for topic in result:
+                topic.slide_indices = sorted(
+                    {slide for section in topic.sections for slide in section.slide_indices}
+                )
+            try:
+                write_diagnostic(
+                    output_dir / "document-slide-alignment.json",
+                    mode=self._document_alignment_mode,
+                    assignments=v2_assignments,
+                    placements=tuple(placements),
+                    prompt_versions={"catalog": "native-text-v1", "alignment": "dp-v1"},
+                )
+            except Exception as error:  # noqa: BLE001 - diagnostics must never fail processing
+                logger.warning("document alignment diagnostics write failed: %s", error)
+            return StructurizeResult(result, v2_assignments, tuple(placements))
+
+        assignments: list[SlideAssignment] = []
+        placements: list[SlidePlacement] = []
+        by_slide = {
+            slide_num: global_section_id
+            for global_section_id, section in enumerate(
+                section for topic in result for section in topic.sections
+            )
+            for slide_num in section.slide_indices
+        }
+        for asset in slide_assets:
+            global_section_id = by_slide.get(asset.slide_num)
+            if global_section_id is None:
+                assignments.append(
+                    SlideAssignment(
+                        asset.slide_num,
+                        "unmentioned",
+                        None,
+                        (),
+                        None,
+                        "unresolved",
+                        0.0,
+                        "legacy_unassigned",
+                    )
+                )
+                placements.append(
+                    SlidePlacement(
+                        asset.slide_num,
+                        "appendix",
+                        None,
+                        anchor_confidence="none",
+                        fallback_reason="legacy_unassigned",
+                    )
+                )
+            else:
+                assignments.append(
+                    SlideAssignment(
+                        asset.slide_num,
+                        "discussed",
+                        global_section_id,
+                        (),
+                        None,
+                        "probable",
+                        0.0,
+                        "legacy_mapping",
+                    )
+                )
+                placements.append(
+                    SlidePlacement(
+                        asset.slide_num,
+                        "section_gallery",
+                        global_section_id,
+                        gallery_position="before_content",
+                        anchor_confidence="fallback",
+                        fallback_reason="legacy_mapping",
+                    )
+                )
+        if self._document_alignment_mode == "shadow":
+            try:
+                write_diagnostic(
+                    output_dir / "document-slide-alignment.json",
+                    mode=self._document_alignment_mode,
+                    assignments=v2_assignments,
+                    placements=tuple(placements),
+                    prompt_versions={"catalog": "native-text-v1", "alignment": "dp-v1"},
+                )
+            except Exception as error:  # noqa: BLE001 - diagnostics must never fail processing
+                logger.warning("document alignment diagnostics write failed: %s", error)
+        return StructurizeResult(result, tuple(assignments), tuple(placements))

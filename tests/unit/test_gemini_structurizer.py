@@ -2,10 +2,175 @@ import json
 
 import pytest
 
+from lecturelog.domain.slides import SlideAsset, StructurizeContext
 from lecturelog.infrastructure.structurize.gemini_structurizer import (
     GeminiStructurizer,
     _parse_json,
 )
+
+
+@pytest.mark.asyncio
+async def test_v2_uses_evidence_and_does_not_send_slide_to_render(tmp_path, prompts_dir):
+    srt = tmp_path / "t.srt"
+    srt.write_text(
+        "1\n00:00:00,000 --> 00:00:10,000\nТеперь разберём бинарное дерево поиска и его вершины.\n",
+        encoding="utf-8",
+    )
+    slide = tmp_path / "slide.png"
+    slide.write_bytes(b"slide")
+    topics_json = json.dumps([{"title": "Деревья", "start": "0:00", "end": "0:10"}])
+    sections_json = json.dumps([{"title": "Поиск", "start": "0:00", "end": "0:10"}])
+    gemini = ScriptedGemini([topics_json, sections_json, "Бинарное дерево поиска.\n\nВершины."])
+    structurizer = _make_structurizer(gemini, prompts_dir)
+    structurizer._document_alignment_mode = "v2"
+
+    result = await structurizer.structurize(
+        srt_path=srt,
+        slide_assets=[
+            SlideAsset(
+                1,
+                slide,
+                "document",
+                extracted_text="Бинарное дерево поиска. Вершины.",
+                native_text_quality="good",
+            )
+        ],
+        context=StructurizeContext("audio"),
+        output_dir=tmp_path / "out",
+    )
+
+    assert result.slide_assignments[0].match_status == "discussed"
+    assert result.slide_assignments[0].assignment_confidence == "probable"
+    assert result.slide_placements[0].output_kind == "section_gallery"
+    assert "<!-- slide:1 -->" not in result.topics[0].sections[0].content
+    assert result.topics[0].sections[0].slide_indices == [1]
+    assert all(not call["images"] for call in gemini.recorded_calls)
+
+
+@pytest.mark.asyncio
+async def test_v2_alignment_failure_falls_back_to_appendix(tmp_path, prompts_dir, monkeypatch):
+    srt = tmp_path / "t.srt"
+    srt.write_text("1\n00:00:00,000 --> 00:00:10,000\ntext\n", encoding="utf-8")
+    slide = tmp_path / "slide.png"
+    slide.write_bytes(b"slide")
+    topics_json = json.dumps([{"title": "T", "start": "0:00", "end": "0:10"}])
+    sections_json = json.dumps([{"title": "S", "start": "0:00", "end": "0:10"}])
+    gemini = ScriptedGemini([topics_json, sections_json, "Rendered only from SRT."])
+    structurizer = _make_structurizer(gemini, prompts_dir)
+    structurizer._document_alignment_mode = "v2"
+
+    def fail(**_kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(structurizer._document_alignment, "align", fail)
+    result = await structurizer.structurize(
+        srt_path=srt,
+        slide_assets=[
+            SlideAsset(
+                1,
+                slide,
+                "document",
+                extracted_text="slide-only claim",
+                native_text_quality="good",
+            )
+        ],
+        context=StructurizeContext("audio"),
+        output_dir=tmp_path / "out",
+    )
+    assert result.slide_placements[0].output_kind == "appendix"
+    assert result.topics[0].sections[0].slide_indices == []
+
+
+@pytest.mark.asyncio
+async def test_v2_diagnostics_include_final_placements(tmp_path, prompts_dir):
+    srt = tmp_path / "t.srt"
+    srt.write_text(
+        "1\n00:00:00,000 --> 00:00:10,000\nРазбираем бинарное дерево.\n",
+        encoding="utf-8",
+    )
+    slide = tmp_path / "slide.png"
+    slide.write_bytes(b"slide")
+    gemini = ScriptedGemini(
+        [
+            json.dumps([{"title": "T", "start": "0:00", "end": "0:10"}]),
+            json.dumps([{"title": "S", "start": "0:00", "end": "0:10"}]),
+            "Бинарное дерево.",
+        ]
+    )
+    structurizer = _make_structurizer(gemini, prompts_dir)
+    structurizer._document_alignment_mode = "v2"
+    output_dir = tmp_path / "out"
+
+    result = await structurizer.structurize(
+        srt_path=srt,
+        slide_assets=[
+            SlideAsset(
+                1,
+                slide,
+                "document",
+                extracted_text="Бинарное дерево",
+                native_text_quality="good",
+            )
+        ],
+        context=StructurizeContext("audio"),
+        output_dir=output_dir,
+    )
+
+    diagnostic = json.loads(
+        (output_dir / "document-slide-alignment.json").read_text(encoding="utf-8")
+    )
+    assert diagnostic["placements"] == [
+        {
+            "slide_num": result.slide_placements[0].slide_num,
+            "output_kind": result.slide_placements[0].output_kind,
+            "global_section_id": result.slide_placements[0].global_section_id,
+            "block_index": result.slide_placements[0].block_index,
+            "side": result.slide_placements[0].side,
+            "gallery_position": result.slide_placements[0].gallery_position,
+            "anchor_confidence": result.slide_placements[0].anchor_confidence,
+            "fallback_reason": result.slide_placements[0].fallback_reason,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_v2_diagnostics_failure_is_warning_only(tmp_path, prompts_dir, monkeypatch):
+    srt = tmp_path / "t.srt"
+    srt.write_text("1\n00:00:00,000 --> 00:00:10,000\ntext\n", encoding="utf-8")
+    slide = tmp_path / "slide.png"
+    slide.write_bytes(b"slide")
+    gemini = ScriptedGemini(
+        [
+            json.dumps([{"title": "T", "start": "0:00", "end": "0:10"}]),
+            json.dumps([{"title": "S", "start": "0:00", "end": "0:10"}]),
+            "Rendered text.",
+        ]
+    )
+    structurizer = _make_structurizer(gemini, prompts_dir)
+    structurizer._document_alignment_mode = "v2"
+
+    def fail(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(
+        "lecturelog.infrastructure.structurize.gemini_structurizer.write_diagnostic", fail
+    )
+    result = await structurizer.structurize(
+        srt_path=srt,
+        slide_assets=[
+            SlideAsset(
+                1,
+                slide,
+                "document",
+                extracted_text="text",
+                native_text_quality="good",
+            )
+        ],
+        context=StructurizeContext("audio"),
+        output_dir=tmp_path / "out",
+    )
+
+    assert result.slide_assignments
 
 
 def test_parse_json_strips_code_fence():
@@ -29,7 +194,9 @@ class ScriptedGemini:
         self, prompt, models, images=None, *, on_usage=None, response_json=False, effort=None
     ):
         self.on_usage_seen.append(on_usage)
-        self.recorded_calls.append({"models": list(models), "effort": effort, "images": images})
+        self.recorded_calls.append(
+            {"models": list(models), "effort": effort, "images": images, "prompt": prompt}
+        )
         r = self._responses[self.calls]
         self.calls += 1
         return r
@@ -132,6 +299,66 @@ async def test_structurize_normalizes_srt_timecodes_with_milliseconds(tmp_path, 
 
 
 @pytest.mark.asyncio
+async def test_structurize_repairs_inverted_section_range(tmp_path, prompts_dir):
+    """Сплиттер иногда выдаёт секцию с end <= start.
+
+    Такая шкала роняла ffmpeg («-to value smaller than -ss») уже после того, как
+    потрачены транскрипция и все LLM-стадии, и заодно обнуляла выравнивание всей
+    колоды. Границу чиним по соседям: конец битой секции — начало следующей.
+    """
+    srt = tmp_path / "t.srt"
+    srt.write_text("1\n00:00:00,000 --> 00:10:00,000\nтекст\n", encoding="utf-8")
+
+    topics_json = json.dumps([{"title": "Тема 1", "start": "00:00:00", "end": "00:10:00"}])
+    sections_json = json.dumps(
+        [
+            {"title": "Подтема 1", "start": "00:00:00", "end": "00:04:00"},
+            {"title": "Подтема 2", "start": "00:04:00", "end": "00:03:00"},
+            {"title": "Подтема 3", "start": "00:07:00", "end": "00:10:00"},
+        ]
+    )
+    gemini = ScriptedGemini([topics_json, sections_json, "к1", "к2", "к3"])
+
+    structurizer = _make_structurizer(gemini, prompts_dir)
+    topics = await structurizer.structurize(
+        srt_path=srt, slide_images=[], output_dir=tmp_path / "out"
+    )
+
+    sections = topics[0].sections
+    assert [(s.start, s.end) for s in sections] == [
+        ("00:00:00", "00:04:00"),
+        ("00:04:00", "00:07:00"),
+        ("00:07:00", "00:10:00"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_structurize_repairs_inverted_range_in_last_section(tmp_path, prompts_dir):
+    """У последней секции соседа справа нет — границу берём из конца транскрипта."""
+    srt = tmp_path / "t.srt"
+    srt.write_text("1\n00:00:00,000 --> 00:10:00,000\nтекст\n", encoding="utf-8")
+
+    topics_json = json.dumps([{"title": "Тема 1", "start": "00:00:00", "end": "00:10:00"}])
+    sections_json = json.dumps(
+        [
+            {"title": "Подтема 1", "start": "00:00:00", "end": "00:06:00"},
+            {"title": "Подтема 2", "start": "00:06:00", "end": "00:06:00"},
+        ]
+    )
+    gemini = ScriptedGemini([topics_json, sections_json, "к1", "к2"])
+
+    structurizer = _make_structurizer(gemini, prompts_dir)
+    topics = await structurizer.structurize(
+        srt_path=srt, slide_images=[], output_dir=tmp_path / "out"
+    )
+
+    assert [(s.start, s.end) for s in topics[0].sections] == [
+        ("00:00:00", "00:06:00"),
+        ("00:06:00", "00:10:00"),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_structurize_subsplit_fallback_on_bad_json(tmp_path, prompts_dir):
     srt = tmp_path / "t.srt"
     srt.write_text("1\n00:00:00,000 --> 00:05:00,000\nтекст\n", encoding="utf-8")
@@ -226,3 +453,205 @@ async def test_structurize_with_slides_uses_per_stage_effort_and_models(tmp_path
     assert len(render_calls) == 1
     assert render_calls[0]["effort"] == "high"
     assert render_calls[0]["images"]
+
+
+def test_slide_matcher_effort_is_independent_from_subsplit(tmp_path):
+    """Поднятие effort контентных стадий не должно менять effort матчера слайдов."""
+    structurizer = GeminiStructurizer(
+        gemini_client=object(),
+        split_models=["m"],
+        subsplit_models=["m"],
+        render_models=["m"],
+        concurrency_subsplit=1,
+        concurrency_render=1,
+        prompts_dir=tmp_path,
+        effort_split="medium",
+        effort_subsplit="medium",
+        effort_render="medium",
+        effort_slide_match="low",
+    )
+
+    assert structurizer._document_alignment._effort == "low"
+
+
+def test_slide_matcher_models_are_independent_from_subsplit(tmp_path):
+    """У матчера своя ротация: в неё добавляется модель, не подверженная RECITATION."""
+    structurizer = GeminiStructurizer(
+        gemini_client=object(),
+        split_models=["m"],
+        subsplit_models=["google/gemini-3.6-flash"],
+        render_models=["m"],
+        concurrency_subsplit=1,
+        concurrency_render=1,
+        prompts_dir=tmp_path,
+        effort_split="medium",
+        effort_subsplit="medium",
+        effort_render="medium",
+        slide_match_models=["google/gemini-3.6-flash", "google/gemma-4-31b-it:free"],
+    )
+
+    assert structurizer._document_alignment._models == [
+        "google/gemini-3.6-flash",
+        "google/gemma-4-31b-it:free",
+    ]
+
+
+def test_slide_matcher_models_fall_back_to_subsplit(tmp_path):
+    """Без явного списка поведение прежнее — модели стадии SUBSPLIT."""
+    structurizer = GeminiStructurizer(
+        gemini_client=object(),
+        split_models=["m"],
+        subsplit_models=["google/gemini-3.6-flash", "google/gemini-3.5-flash"],
+        render_models=["m"],
+        concurrency_subsplit=1,
+        concurrency_render=1,
+        prompts_dir=tmp_path,
+        effort_split="medium",
+        effort_subsplit="medium",
+        effort_render="medium",
+    )
+
+    assert structurizer._document_alignment._models == [
+        "google/gemini-3.6-flash",
+        "google/gemini-3.5-flash",
+    ]
+
+
+def test_slide_context_block_limits_usage_to_spelling():
+    """Блок обязан ограничивать применение: иначе рендер пересказывает слайды."""
+    from lecturelog.domain.slides import SlideCatalogEntry
+    from lecturelog.infrastructure.structurize.gemini_structurizer import _slide_context_block
+
+    entry = SlideCatalogEntry(
+        7,
+        "content",
+        "ENIAC",
+        "первая ЭВМ, программирование переключателями",
+        source_concepts=("ENIAC", "перфокарты"),
+        transcript_language_terms=("ЭНИАК",),
+        proper_nouns=("ENIAC",),
+    )
+
+    block = _slide_context_block([entry])
+
+    assert "ENIAC" in block
+    assert "не добавляй" in block.lower()
+
+
+def test_slide_context_block_is_empty_without_entries():
+    from lecturelog.infrastructure.structurize.gemini_structurizer import _slide_context_block
+
+    assert _slide_context_block([]) == ""
+
+
+@pytest.mark.asyncio
+async def test_v2_render_prompt_carries_slide_spellings(tmp_path, prompts_dir):
+    """Сквозная проверка: написания со слайда доходят до промпта рендера."""
+    srt = tmp_path / "t.srt"
+    srt.write_text(
+        "1\n00:00:00,000 --> 00:00:10,000\nРазберём бинарное дерево поиска и его вершины.\n",
+        encoding="utf-8",
+    )
+    slide = tmp_path / "slide.png"
+    slide.write_bytes(b"slide")
+    topics_json = json.dumps([{"title": "Деревья", "start": "0:00", "end": "0:10"}])
+    sections_json = json.dumps([{"title": "Поиск", "start": "0:00", "end": "0:10"}])
+    gemini = ScriptedGemini([topics_json, sections_json, "Бинарное дерево поиска.\n\nВершины."])
+    structurizer = _make_structurizer(gemini, prompts_dir)
+    structurizer._document_alignment_mode = "v2"
+
+    await structurizer.structurize(
+        srt_path=srt,
+        slide_assets=[
+            SlideAsset(
+                1,
+                slide,
+                "document",
+                extracted_text="Бинарное дерево поиска. Реализация на Fortran.",
+                native_text_quality="good",
+            )
+        ],
+        context=StructurizeContext("audio"),
+        output_dir=tmp_path / "out",
+    )
+
+    render_prompt = gemini.recorded_calls[-1]["prompt"]
+    assert "Написания имён и терминов из презентации" in render_prompt
+    assert "Fortran" in render_prompt
+    # Картинки в рендер по-прежнему не уходят: контекст передаётся текстом.
+    assert all(not call["images"] for call in gemini.recorded_calls)
+
+
+@pytest.mark.asyncio
+async def test_render_context_covers_unassigned_slides(tmp_path, prompts_dir):
+    """Потерянный слайд обязан подсказывать написание.
+
+    Слайд 7 (ENIAC) не привязался именно потому, что ASR дал «Мониак». Если
+    подсказки брать только с привязанных слайдов, круг не разорвать: искажение
+    мешает матчингу, а без матчинга нет подсказки для его исправления.
+    """
+    srt = tmp_path / "t.srt"
+    srt.write_text(
+        "1\n00:00:00,000 --> 00:00:10,000\nРазберём бинарное дерево поиска и его вершины.\n",
+        encoding="utf-8",
+    )
+    matched = tmp_path / "slide1.png"
+    matched.write_bytes(b"slide")
+    lost = tmp_path / "slide2.png"
+    lost.write_bytes(b"slide")
+    topics_json = json.dumps([{"title": "Деревья", "start": "0:00", "end": "0:10"}])
+    sections_json = json.dumps([{"title": "Поиск", "start": "0:00", "end": "0:10"}])
+    gemini = ScriptedGemini([topics_json, sections_json, "Бинарное дерево поиска.\n\nВершины."])
+    structurizer = _make_structurizer(gemini, prompts_dir)
+    structurizer._document_alignment_mode = "v2"
+
+    await structurizer.structurize(
+        srt_path=srt,
+        slide_assets=[
+            SlideAsset(
+                1,
+                matched,
+                "document",
+                extracted_text="Бинарное дерево поиска. Вершины.",
+                native_text_quality="good",
+            ),
+            SlideAsset(
+                2,
+                lost,
+                "document",
+                extracted_text="ENIAC и перфокарты",
+                native_text_quality="good",
+            ),
+        ],
+        context=StructurizeContext("audio"),
+        output_dir=tmp_path / "out",
+    )
+
+    render_prompt = gemini.recorded_calls[-1]["prompt"]
+    assert "ENIAC" in render_prompt
+
+
+def test_slide_context_block_lists_only_proper_nouns():
+    """В справочник идут только имена и аббревиатуры.
+
+    Целые формулировки со слайда рендер переносил в конспект как сказанное
+    лектором: словарь из отдельных токенов переносить нечего.
+    """
+    from lecturelog.domain.slides import SlideCatalogEntry
+    from lecturelog.infrastructure.structurize.gemini_structurizer import _slide_context_block
+
+    entry = SlideCatalogEntry(
+        14,
+        "content",
+        "Востребованные компетенции",
+        "владение более чем одним языком программирования",
+        source_concepts=("владение более чем одним языком программирования",),
+        proper_nouns=("ENIAC", "Fortran"),
+    )
+
+    block = _slide_context_block([entry])
+
+    assert "ENIAC" in block
+    assert "Fortran" in block
+    assert "владение более чем одним" not in block
+    assert "Востребованные компетенции" not in block
