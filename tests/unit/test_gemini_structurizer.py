@@ -298,6 +298,15 @@ async def test_structurize_normalizes_srt_timecodes_with_milliseconds(tmp_path, 
     assert topics[0].sections[0].end == "00:05:00"
 
 
+# Реплики лежат на границах подтем: сдвиг к границам реплики их не трогает.
+_THREE_CUES_SRT = (
+    "1\n00:00:00,000 --> 00:04:00,000\nа\n\n"
+    "2\n00:04:00,000 --> 00:07:00,000\nб\n\n"
+    "3\n00:07:00,000 --> 00:10:00,000\nв\n"
+)
+_SIX_MIN_CUES_SRT = "1\n00:00:00,000 --> 00:06:00,000\nа\n\n2\n00:06:00,000 --> 00:10:00,000\nб\n"
+
+
 @pytest.mark.asyncio
 async def test_structurize_repairs_inverted_section_range(tmp_path, prompts_dir):
     """Сплиттер иногда выдаёт секцию с end <= start.
@@ -307,7 +316,7 @@ async def test_structurize_repairs_inverted_section_range(tmp_path, prompts_dir)
     колоды. Границу чиним по соседям: конец битой секции — начало следующей.
     """
     srt = tmp_path / "t.srt"
-    srt.write_text("1\n00:00:00,000 --> 00:10:00,000\nтекст\n", encoding="utf-8")
+    srt.write_text(_THREE_CUES_SRT, encoding="utf-8")
 
     topics_json = json.dumps([{"title": "Тема 1", "start": "00:00:00", "end": "00:10:00"}])
     sections_json = json.dumps(
@@ -336,7 +345,7 @@ async def test_structurize_repairs_inverted_section_range(tmp_path, prompts_dir)
 async def test_structurize_repairs_inverted_range_in_last_section(tmp_path, prompts_dir):
     """У последней секции соседа справа нет — границу берём из конца транскрипта."""
     srt = tmp_path / "t.srt"
-    srt.write_text("1\n00:00:00,000 --> 00:10:00,000\nтекст\n", encoding="utf-8")
+    srt.write_text(_SIX_MIN_CUES_SRT, encoding="utf-8")
 
     topics_json = json.dumps([{"title": "Тема 1", "start": "00:00:00", "end": "00:10:00"}])
     sections_json = json.dumps(
@@ -655,3 +664,153 @@ def test_slide_context_block_lists_only_proper_nouns():
     assert "Fortran" in block
     assert "владение более чем одним" not in block
     assert "Востребованные компетенции" not in block
+
+
+def _cues_srt(*cues):
+    """cues: (начало, конец, текст) в секундах."""
+
+    def stamp(value):
+        return f"00:{value // 60:02d}:{value % 60:02d},000"
+
+    return "\n\n".join(
+        f"{i}\n{stamp(a)} --> {stamp(b)}\n{text}" for i, (a, b, text) in enumerate(cues, start=1)
+    )
+
+
+async def _run_subsplit(tmp_path, prompts_dir, srt_text, sections, renders):
+    srt = tmp_path / "t.srt"
+    srt.write_text(srt_text, encoding="utf-8")
+    topics_json = json.dumps([{"title": "Тема", "start": "00:00:00", "end": "00:10:00"}])
+    gemini = ScriptedGemini([topics_json, json.dumps(sections), *renders])
+    topics = await _make_structurizer(gemini, prompts_dir).structurize(
+        srt_path=srt, slide_images=[], output_dir=tmp_path / "out"
+    )
+    render_prompts = [call["prompt"] for call in gemini.recorded_calls[2:]]
+    return topics, render_prompts
+
+
+@pytest.mark.asyncio
+async def test_boundary_mid_cue_does_not_duplicate_cue_in_two_subtopics(tmp_path, prompts_dir):
+    srt = _cues_srt(
+        (0, 60, "первая"), (60, 120, "вторая"), (120, 180, "третья"), (180, 240, "четвёртая")
+    )
+    sections = [
+        {"title": "А", "start": "00:00:00", "end": "00:01:50"},
+        {"title": "Б", "start": "00:01:50", "end": "00:04:00"},
+    ]
+    topics, prompts = await _run_subsplit(tmp_path, prompts_dir, srt, sections, ["a", "b"])
+
+    # 110 с лежит в реплике 60-120 ближе к её концу -> граница на 120 с
+    assert [(s.start, s.end) for s in topics[0].sections] == [
+        ("00:00:00", "00:02:00"),
+        ("00:02:00", "00:04:00"),
+    ]
+    first, second = prompts
+    assert "первая" in first and "вторая" in first and "третья" not in first
+    assert "третья" in second and "четвёртая" in second and "вторая" not in second
+
+
+@pytest.mark.asyncio
+async def test_boundary_on_cue_edge_does_not_duplicate_abutting_cue(tmp_path, prompts_dir):
+    """Граница ровно на стыке реплик: перекрытие по таймкодам дало бы обеим подтемам по реплике."""
+    srt = _cues_srt((0, 60, "первая"), (60, 120, "вторая"))
+    sections = [
+        {"title": "А", "start": "00:00:00", "end": "00:01:00"},
+        {"title": "Б", "start": "00:01:00", "end": "00:02:00"},
+    ]
+    _, prompts = await _run_subsplit(tmp_path, prompts_dir, srt, sections, ["a", "b"])
+
+    assert "вторая" not in prompts[0] and "первая" not in prompts[1]
+
+
+@pytest.mark.asyncio
+async def test_every_cue_lands_in_exactly_one_subtopic_and_boundaries_are_monotonic(
+    tmp_path, prompts_dir
+):
+    cues = [(i * 30, i * 30 + 30, f"реплика{i:02d}") for i in range(10)]
+    sections = [
+        {"title": "А", "start": "00:00:00", "end": "00:01:20"},
+        {"title": "Б", "start": "00:01:20", "end": "00:02:50"},
+        {"title": "В", "start": "00:02:50", "end": "00:05:00"},
+    ]
+    topics, prompts = await _run_subsplit(
+        tmp_path, prompts_dir, _cues_srt(*cues), sections, ["a", "b", "c"]
+    )
+
+    for _, _, text in cues:
+        assert sum(text in prompt for prompt in prompts) == 1, text
+    secs = topics[0].sections
+    assert [s.start for s in secs] == sorted(s.start for s in secs)
+    assert all(s.start < s.end for s in secs)
+
+
+@pytest.mark.asyncio
+async def test_gap_between_subtopics_does_not_lose_cues(tmp_path, prompts_dir):
+    srt = _cues_srt((0, 60, "первая"), (60, 120, "вторая"), (120, 180, "третья"))
+    sections = [
+        {"title": "А", "start": "00:00:00", "end": "00:01:00"},
+        {"title": "Б", "start": "00:02:00", "end": "00:03:00"},
+    ]
+    _, prompts = await _run_subsplit(tmp_path, prompts_dir, srt, sections, ["a", "b"])
+
+    # реплика из зазора достаётся предыдущей подтеме, но только ей
+    assert "вторая" in prompts[0] and "вторая" not in prompts[1]
+
+
+@pytest.mark.asyncio
+async def test_subtopic_collapsed_by_snapping_is_dropped_and_cues_stay_unique(
+    tmp_path, prompts_dir
+):
+    """Две границы внутри одной длинной реплики: подтема короче реплики схлопывается.
+
+    Решение: подтема без реплик удаляется вместе с заголовком (рендер по пустому
+    фрагменту выдумывал бы текст), реплики не дублируются и не теряются.
+    """
+    srt = _cues_srt((0, 60, "первая"), (60, 180, "длинная"), (180, 240, "последняя"))
+    sections = [
+        {"title": "А", "start": "00:00:00", "end": "00:01:20"},
+        {"title": "Б", "start": "00:01:20", "end": "00:01:40"},
+        {"title": "В", "start": "00:01:40", "end": "00:04:00"},
+    ]
+    topics, prompts = await _run_subsplit(tmp_path, prompts_dir, srt, sections, ["a", "b"])
+
+    assert [s.title for s in topics[0].sections] == ["А", "В"]
+    assert len(prompts) == 2
+    for text in ("первая", "длинная", "последняя"):
+        assert sum(text in prompt for prompt in prompts) == 1, text
+
+
+@pytest.mark.asyncio
+async def test_topic_without_cues_after_snapping_is_omitted(tmp_path, prompts_dir):
+    """Если схлопнулись все подтемы темы, пустая тема в результат не попадает."""
+    srt = _cues_srt((0, 120, "одна"), (120, 240, "вторая"))
+    topics_json = json.dumps(
+        [
+            {"title": "Т1", "start": "00:00:00", "end": "00:03:50"},
+            {"title": "Т2", "start": "00:03:50", "end": "00:04:00"},
+        ]
+    )
+    sub1 = json.dumps([{"title": "А", "start": "00:00:00", "end": "00:03:50"}])
+    sub2 = json.dumps(
+        [
+            {"title": "Б", "start": "00:03:50", "end": "00:03:55"},
+            {"title": "В", "start": "00:03:55", "end": "00:04:00"},
+        ]
+    )
+    p = tmp_path / "t.srt"
+    p.write_text(srt, encoding="utf-8")
+    gemini = ScriptedGemini([topics_json, sub1, sub2, "x"])
+    topics = await _make_structurizer(gemini, prompts_dir).structurize(
+        srt_path=p, slide_images=[], output_dir=tmp_path / "out"
+    )
+    assert [t.title for t in topics] == ["Т1"]
+    assert [s.title for s in topics[0].sections] == ["А"]
+
+
+@pytest.mark.asyncio
+async def test_cues_before_first_subtopic_start_are_not_lost(tmp_path, prompts_dir):
+    srt = _cues_srt((0, 60, "вступление"), (60, 120, "основная"))
+    sections = [{"title": "А", "start": "00:01:00", "end": "00:02:00"}]
+    _, prompts = await _run_subsplit(tmp_path, prompts_dir, srt, sections, ["a"])
+
+    assert "вступление" in prompts[0] and "основная" in prompts[0]
