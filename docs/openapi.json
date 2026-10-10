@@ -403,6 +403,30 @@
         "title": "TranscriptFailedError",
         "type": "object"
       },
+      "TranscriptGoneError": {
+        "properties": {
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
+          "error": {
+            "title": "Error",
+            "type": "string"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "title": "TranscriptGoneError",
+        "type": "object"
+      },
       "TranscriptInvalidFormatError": {
         "properties": {
           "allowed": {
@@ -914,6 +938,16 @@
               }
             },
             "description": "Транскрибация завершилась ошибкой"
+          },
+          "410": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TranscriptGoneError"
+                }
+              }
+            },
+            "description": "Задача упала, транскрипта нет (не дошла до STT или удалён по TTL)"
           },
           "422": {
             "content": {

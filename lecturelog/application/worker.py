@@ -124,11 +124,15 @@ class WorkDirSweeper:
         task = await self._repo.get(entry.name)
         if task is None or task.status != TaskStatus.FAILED:
             return False
+        now = self._clock()
         at = _read_terminal_time(entry)
+        if at is not None and at > now:
+            logger.warning("Sweeper: marker из будущего, откат на mtime task=%s", entry.name)
+            at = None
         if at is None:
-            # Marker нет (каталог до внедрения marker): считаем от mtime каталога.
+            # Marker нет/битый/из будущего: считаем от mtime каталога.
             at = datetime.fromtimestamp(entry.stat().st_mtime, UTC)
-        if self._clock() - at < self._retention:
+        if now - at < self._retention:
             return False
         await asyncio.to_thread(shutil.rmtree, entry)
         logger.info("Sweeper: удалён workspace упавшей задачи task=%s", entry.name)
