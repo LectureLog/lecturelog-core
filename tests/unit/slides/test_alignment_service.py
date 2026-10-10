@@ -262,9 +262,7 @@ def test_two_related_slides_on_one_block_keep_verified():
         _assignment(slide_num=6, block_ids=(120,), confidence="verified"),
     )
     relations = (
-        SlideRelation(
-            slide_num=6, kind="progressive_build", group_id="g1", canonical_slide_num=5
-        ),
+        SlideRelation(slide_num=6, kind="progressive_build", group_id="g1", canonical_slide_num=5),
     )
 
     result = DocumentAlignmentService._downgrade_evidence_collisions(assignments, relations)
@@ -279,9 +277,7 @@ def test_exact_duplicates_on_one_block_keep_verified():
         _assignment(slide_num=8, block_ids=(77,), confidence="verified"),
     )
     relations = (
-        SlideRelation(
-            slide_num=8, kind="exact_duplicate", group_id="g2", canonical_slide_num=2
-        ),
+        SlideRelation(slide_num=8, kind="exact_duplicate", group_id="g2", canonical_slide_num=2),
     )
 
     result = DocumentAlignmentService._downgrade_evidence_collisions(assignments, relations)

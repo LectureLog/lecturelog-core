@@ -38,9 +38,7 @@ from lecturelog.infrastructure.structurize.slide_mapping import normalize_slide_
 logger = logging.getLogger(__name__)
 
 
-def _repair_section_timeline(
-    topics_sections: list[list[dict[str, Any]]], srt_content: str
-) -> None:
+def _repair_section_timeline(topics_sections: list[list[dict[str, Any]]], srt_content: str) -> None:
     """Чинит секции, у которых сплиттер выдал end <= start.
 
     Битая граница обходится дорого: ffmpeg падает на нарезке («-to value smaller
