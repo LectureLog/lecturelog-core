@@ -12,7 +12,12 @@ import pytest
 
 from lecturelog.domain.slides import SlideAsset
 from lecturelog.infrastructure.slides.alignment.anchoring import anchor_assignment
-from lecturelog.infrastructure.slides.alignment.service import DocumentAlignmentService
+from lecturelog.infrastructure.slides.alignment.diagnostics import write_diagnostic
+from lecturelog.infrastructure.slides.alignment.sequence import AlignmentWeights
+from lecturelog.infrastructure.slides.alignment.service import (
+    AlignmentTuning,
+    DocumentAlignmentService,
+)
 
 
 class ScriptedLlm:
@@ -257,3 +262,147 @@ async def test_slide_without_candidates_and_blank_page_stay_in_appendix(tmp_path
         )
         assert placement.output_kind == "appendix"
         assert placement.global_section_id is None
+
+
+# Сценарий слайда 16 лекции 02-12: профстандарт 3-го уровня. Судья подтвердил
+# раздел 1, где термин лишь упомянут мимоходом, а целиком слайд разбирается в
+# разделе 3 — уже после следующего по колоде слайда (раздел 2).
+_STANDARD_SLIDE = {
+    "slide_num": 2,
+    "title": "Профессиональный стандарт программиста",
+    "visible_text": (
+        "Третий уровень квалификации\nТрудовые функции\nКодирование программных модулей\n"
+        "Отладка и тестирование компонентов\nОформление документации"
+    ),
+    "source_concepts": ["профессиональный стандарт", "уровень квалификации"],
+}
+_STANDARD_SRT = _srt(
+    "Сегодня говорим про организацию курса.",
+    "Пауза.",
+    "Типы программных продуктов; профессиональный стандарт упомянем позже.",
+    "Пауза.",
+    "Модели жизненного цикла: водопадная модель, итеративная модель, спиральная модель.",
+    "Пауза.",
+    "Профессиональный стандарт программиста: третий уровень квалификации, трудовые"
+    " функции — кодирование программных модулей, отладка и тестирование компонентов,"
+    " оформление документации.",
+    "Пауза.",
+)
+
+
+def _clock(seconds: int) -> str:
+    return f"{seconds // 60}:{seconds % 60:02d}"
+
+
+# Разделы по 20 секунд без общих реплик на границах: в каждом одна
+# содержательная реплика и пауза, чтобы лексика раздела не подмешивалась соседу.
+_STANDARD_LAYOUT = [
+    [
+        {
+            "title": f"Раздел {index}",
+            "start": _clock(index * 20 + 1),
+            "end": _clock(index * 20 + 19),
+        }
+        for index in range(4)
+    ]
+]
+
+
+def _standard_llm(*standard_verdicts: str) -> ScriptedLlm:
+    return ScriptedLlm(
+        [
+            _catalog_response({**_COURSE_SLIDE, "slide_num": 1}, _STANDARD_SLIDE),
+            _catalog_response(
+                {
+                    "slide_num": 3,
+                    "title": "Модели жизненного цикла",
+                    "visible_text": "Водопадная модель\nИтеративная модель\nСпиральная модель",
+                }
+            ),
+            _semantic(1, 0, [1], "Сегодня говорим про организацию курса.", "explicit"),
+            *standard_verdicts,
+            _semantic(3, 2, [5], "Модели жизненного цикла", "explicit"),
+        ]
+    )
+
+
+@pytest.mark.asyncio
+async def test_stronger_competitor_sends_slide_to_competitor_gallery(tmp_path):
+    """Отрицательный margin: конкурент совпадает с речью заметно сильнее выбора.
+
+    Путь по порядку колоды держит слайд в разделе 1 — так подтвердил судья, —
+    но раздел 3 говорит о слайде намного больше. Уверенность падает до
+    unresolved, и слайд уходит в галерею раздела конкурента, хотя раздел 3
+    идёт после раздела следующего слайда и нарушает порядок колоды.
+    """
+    llm = _standard_llm(_semantic(2, 1, [3], "профессиональный стандарт", "explicit"))
+    service = DocumentAlignmentService(llm=llm, models=["m"], prompts_dir=_prompts(tmp_path))
+
+    result = await service.align(
+        assets=_assets(tmp_path, 3),
+        section_layout=_STANDARD_LAYOUT,
+        srt_content=_STANDARD_SRT,
+    )
+    course, standard, lifecycle = result.assignments
+
+    assert (course.match_status, course.global_section_id) == ("discussed", 0)
+    assert (lifecycle.match_status, lifecycle.global_section_id) == ("discussed", 2)
+    assert standard.match_status == "unbound"
+    assert standard.assignment_confidence == "unresolved"
+    assert standard.status_reason == "stronger_competitor"
+    assert standard.global_section_id == 3
+
+    _, placement = anchor_assignment(standard, result.catalog[2], "Профессиональный стандарт.")
+    assert placement.output_kind == "section_gallery"
+    assert placement.global_section_id == 3
+    assert placement.fallback_reason == "unbound:stronger_competitor"
+
+    # Диагностика называет причину и честно разводит, куда ушёл слайд
+    # (сильнейший кандидат, без своего margin) и какой выбор пути проиграл.
+    assert standard.reason_code.startswith("semantic_none:")
+    assert ":margin=none:path_section=1:path_margin=-" in standard.reason_code
+    diagnostic = tmp_path / "alignment.json"
+    write_diagnostic(diagnostic, mode="v2", assignments=result.assignments)
+    payload = json.loads(diagnostic.read_text(encoding="utf-8"))
+    assert payload["assignments"][1]["status_reason"] == "stronger_competitor"
+
+
+@pytest.mark.asyncio
+async def test_stronger_competitor_unbinds_double_confirmed_strong_verdict(tmp_path):
+    """Margin действует на всех уровнях: strong-вердикт с цитатой раньше давал probable."""
+    verdict = _semantic(2, 1, [3], "профессиональный стандарт", "strong")
+    llm = _standard_llm(verdict, verdict)
+    service = DocumentAlignmentService(llm=llm, models=["m"], prompts_dir=_prompts(tmp_path))
+
+    result = await service.align(
+        assets=_assets(tmp_path, 3),
+        section_layout=_STANDARD_LAYOUT,
+        srt_content=_STANDARD_SRT,
+    )
+    standard = result.assignments[1]
+
+    assert (standard.match_status, standard.status_reason) == ("unbound", "stronger_competitor")
+    assert standard.global_section_id == 3
+
+
+@pytest.mark.asyncio
+async def test_margin_threshold_is_tunable_next_to_alignment_weights(tmp_path):
+    """Порог margin задаётся рядом с весами: ниже него — уже не конкурент."""
+    llm = _standard_llm(_semantic(2, 1, [3], "профессиональный стандарт", "explicit"))
+    service = DocumentAlignmentService(
+        llm=llm,
+        models=["m"],
+        prompts_dir=_prompts(tmp_path),
+        tuning=AlignmentTuning(weights=AlignmentWeights(min_margin=-100.0)),
+    )
+
+    result = await service.align(
+        assets=_assets(tmp_path, 3),
+        section_layout=_STANDARD_LAYOUT,
+        srt_content=_STANDARD_SRT,
+    )
+    standard = result.assignments[1]
+
+    assert standard.match_status == "discussed"
+    assert standard.assignment_confidence == "probable"
+    assert standard.global_section_id == 1

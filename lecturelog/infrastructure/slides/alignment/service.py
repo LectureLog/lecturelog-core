@@ -395,13 +395,15 @@ class DocumentAlignmentService:
 
     @staticmethod
     def _with_competition(candidate, candidates):
-        alternatives = [
-            item.lexical_score
-            for item in candidates
-            if item.global_section_id != candidate.global_section_id
-        ]
-        margin = candidate.lexical_score - max(alternatives) if alternatives else None
-        return replace(candidate, competition_margin=margin)
+        competitors = tuple(
+            item for item in candidates if item.global_section_id != candidate.global_section_id
+        )
+        margin = (
+            candidate.lexical_score - max(item.lexical_score for item in competitors)
+            if competitors
+            else None
+        )
+        return replace(candidate, competition_margin=margin, competitors=competitors)
 
     def _global_recovery(self, entry, sections, blocks):
         recovered_pool = generate_candidates(

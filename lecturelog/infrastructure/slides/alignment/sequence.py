@@ -21,6 +21,11 @@ class AlignmentWeights:
     lexical_weight: float = 1.0
     visual_weight: float = 3.0
     progressive_same_section_bonus: float = 0.75
+    # Порог margin выбора: ниже него слайд непривязанный с причиной
+    # `stronger_competitor` на любом уровне уверенности. Margin выбора пути
+    # неотрицателен, поэтому при пороге 0 срабатывает только отрицательный
+    # competition_margin — конкурент из другого раздела лексически сильнее.
+    min_margin: float = 0.0
 
 
 def align_sequence(
@@ -98,6 +103,7 @@ def align_sequence(
             has_grounded_evidence=bool(chosen.evidence_block_ids and chosen.evidence_quote),
             has_competing_context=chosen.competition_margin is not None,
             visual_score=chosen.visual_score,
+            min_margin=weights.min_margin,
         )
         if calibration.unbound_reason is None:
             assignments.append(
@@ -113,10 +119,15 @@ def align_sequence(
                 )
             )
             continue
+        pool = candidates.get(slide_num, ())
+        if calibration.unbound_reason == "stronger_competitor":
+            # Конкуренты в выбор пути не входят, но галерея должна достаться
+            # разделу с самым сильным доказательством — возможно, конкуренту.
+            pool = (*pool, *chosen.competitors)
         assignments.append(
             _unbound_or_unmentioned(
                 slide_num,
-                candidates.get(slide_num, ()),
+                pool,
                 chosen,
                 calibration.unbound_reason,
                 margin,
@@ -189,8 +200,25 @@ def _unbound_or_unmentioned(
         None,
         "unresolved",
         _candidate_score(strongest, weights),
-        _reason_code(strongest, margin),
+        _unbound_reason_code(strongest, chosen, margin),
         status_reason=unbound_reason,
+    )
+
+
+def _unbound_reason_code(
+    strongest: SlideCandidate, chosen: SlideCandidate | None, margin: float | None
+) -> str:
+    """reason_code описывает сильнейшего кандидата, куда ушёл слайд.
+
+    Margin посчитан для выбора пути, поэтому у сильнейшего он указан, только
+    если это и есть выбор; иначе выбор пути и его margin записаны отдельно.
+    """
+    if chosen is None or strongest is chosen:
+        return _reason_code(strongest, margin)
+    return (
+        f"{_reason_code(strongest, None)}"
+        f":path_section={chosen.global_section_id}"
+        f":path_margin={'none' if margin is None else f'{margin:.3f}'}"
     )
 
 

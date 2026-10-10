@@ -6,7 +6,7 @@ from typing import Literal
 Confidence = Literal["verified", "probable", "unresolved"]
 # Причины, по которым у выбранного кандидата уверенность `unresolved`:
 # подмножество SlideStatusReason из домена, которое выставляет калибровка.
-UnboundReason = Literal["weak_evidence"]
+UnboundReason = Literal["weak_evidence", "stronger_competitor"]
 
 
 @dataclass(frozen=True)
@@ -28,7 +28,13 @@ def calibrate(
     has_grounded_evidence: bool,
     has_competing_context: bool,
     visual_score: float | None = None,
+    min_margin: float = 0.0,
 ) -> Calibration:
+    # Margin ниже порога значит, что другой раздел совпадает с речью сильнее
+    # выбранного: такой выбор не закрепляется ни на каком уровне, даже если
+    # судья подтвердил его цитатой.
+    if margin < min_margin:
+        return Calibration("unresolved", "stronger_competitor")
     confidence = confidence_from_margin(
         semantic_tier=semantic_tier,
         margin=margin,
