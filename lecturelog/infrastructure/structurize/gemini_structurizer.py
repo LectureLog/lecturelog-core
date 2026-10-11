@@ -64,7 +64,8 @@ def _repair_section_timeline(topics_sections: list[list[dict[str, Any]]], srt_co
     for index, section in enumerate(flat):
         start = parse_srt_time(str(section["start"]))
         raw_end = section.get("end")
-        if raw_end not in (None, "") and parse_srt_time(str(raw_end)) > start:
+        end_missing = raw_end in (None, "")
+        if not end_missing and parse_srt_time(str(raw_end)) > start:
             continue
 
         repaired = next(
@@ -78,7 +79,7 @@ def _repair_section_timeline(topics_sections: list[list[dict[str, Any]]], srt_co
             ),
             start + 1.0,
         )
-        if raw_end in (None, ""):
+        if end_missing:
             logger.warning(
                 "секция %r пришла без end (start %s); конец достроен по соседям",
                 section.get("title"),

@@ -14,12 +14,14 @@ from lecturelog.domain.exceptions import InvalidSlidesDocument, MediaIngestError
 # Ядро классифицирует по тексту, а не по типам SDK — это позволяет распознавать
 # лимит независимо от конкретного провайдера/клиента.
 _RATE_LIMIT_TOKENS = ("429", "RESOURCE_EXHAUSTED", "503", "UNAVAILABLE")
-_RATE_LIMIT_STATUSES = (429, 503)
 
 # Статус ответа провайдера в тексте ошибки openai SDK: «Error code: 401 - {...}».
 # Берём первое вхождение: дальше в теле лежит metadata.previous_errors — история
 # ретраев самого OpenRouter, где встречаются чужие 429/503. По подстрокам такой
-# 401 (отозванный ключ) раньше превращался в rate_limit.
+# 401 (отозванный ключ) раньше превращался в rate_limit. Решающим статус считаем
+# только для 4xx, кроме 429: это отказ по самому запросу или ключу, а не
+# перегрузка. 5xx Gemini бывает и 500/504 с UNAVAILABLE в теле — их оставляем
+# подстрокам.
 _PROVIDER_STATUS_RE = re.compile(r"ERROR CODE: (\d{3})")
 
 # Подстроки-сигналы протухших/непринятых YouTube-cookies (текст yt-dlp).
@@ -60,9 +62,7 @@ def classify_error(exc: BaseException) -> ErrorCode:
     if any(token in message for token in _COOKIES_INVALID_TOKENS):
         return ErrorCode.COOKIES_INVALID
     status = _PROVIDER_STATUS_RE.search(message)
-    if status is not None:
-        if int(status.group(1)) in _RATE_LIMIT_STATUSES:
-            return ErrorCode.RATE_LIMIT
+    if status is not None and 400 <= int(status.group(1)) < 500 and status.group(1) != "429":
         return ErrorCode.INTERNAL
     if any(token in message for token in _RATE_LIMIT_TOKENS):
         return ErrorCode.RATE_LIMIT
