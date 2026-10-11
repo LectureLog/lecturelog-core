@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
+from datetime import timedelta
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -15,7 +17,7 @@ from lecturelog.application.factories import (
 )
 from lecturelog.application.pipeline_service import PipelineService
 from lecturelog.application.progress_plan import ProgressPlan
-from lecturelog.application.worker import PipelineWorker
+from lecturelog.application.worker import PipelineWorker, WorkDirSweeper
 from lecturelog.config.settings import get_config
 from lecturelog.infrastructure.export.obsidian_exporter import ObsidianExporter
 from lecturelog.infrastructure.frames.provider import VideoFrameProvider
@@ -30,6 +32,15 @@ from lecturelog.infrastructure.slides.alignment.service import AlignmentTuning
 from lecturelog.infrastructure.structurize.gemini_structurizer import GeminiStructurizer
 
 logger = logging.getLogger(__name__)
+
+
+async def _sweep_forever(sweeper: WorkDirSweeper, interval_seconds: float) -> None:
+    while True:
+        try:
+            await sweeper.sweep()
+        except Exception:
+            logger.exception("Sweeper: проход завершился ошибкой")
+        await asyncio.sleep(interval_seconds)
 
 
 @asynccontextmanager
@@ -53,7 +64,12 @@ async def lifespan(app: FastAPI):
     cooldown = ModelCooldown()
     llm = LlmClient(openai_client, cooldown, max_tokens=cfg.llm.max_tokens)
 
-    transcriber = transcriber_factory(cfg.transcribe)
+    # Локальный эфемерный scratch для внутренних стадий пайплайна (не S3).
+    work_dir = Path(os.getenv("WORK_DIR", "/app/data"))
+    # Кеш транскриптов лежит рядом со scratch, но вне каталогов задач: его не сносит
+    # очистка workspace задачи.
+    transcript_cache_dir = cfg.transcribe.cache_dir or work_dir / "transcript_cache"
+    transcriber = transcriber_factory(cfg.transcribe, cache_dir=transcript_cache_dir)
     transcribe_model = (
         "whisper-large-v3" if cfg.transcribe.provider == "groq" else cfg.transcribe.deepgram_model
     )
@@ -139,19 +155,34 @@ async def lifespan(app: FastAPI):
     worker = PipelineWorker(service=service, concurrency=cfg.worker.max_concurrent_tasks)
     await worker.start()
 
+    sweeper_task: asyncio.Task | None = None
+    if cfg.worker.cleanup_enabled:
+        sweeper = WorkDirSweeper(
+            repository=repo,
+            work_root=work_dir,
+            failed_retention=timedelta(hours=cfg.worker.failed_retention_hours),
+            transcript_cache_dir=transcript_cache_dir,
+            cache_retention=timedelta(days=cfg.worker.transcript_cache_retention_days),
+        )
+        sweeper_task = asyncio.create_task(
+            _sweep_forever(sweeper, cfg.worker.sweep_interval_minutes * 60)
+        )
+
     app.state.config = cfg
     app.state.repository = repo
     app.state.worker = worker
     app.state.storage = storage
     app.state.cookie_store = cookie_store
     app.state.presign_expiry = cfg.s3.presign_expiry
-    # Локальный эфемерный scratch для внутренних стадий пайплайна (не S3).
-    app.state.work_dir = Path(os.getenv("WORK_DIR", "/app/data"))
+    app.state.work_dir = work_dir
     app.state.llm = llm
     app.state.prompts_dir = Path("prompts")
     try:
         yield
     finally:
+        if sweeper_task is not None:
+            sweeper_task.cancel()
+            await asyncio.gather(sweeper_task, return_exceptions=True)
         await worker.stop()
         # Закрываем HTTP-клиент OpenRouter, чтобы не оставлять открытые сокеты.
         await openai_client.close()

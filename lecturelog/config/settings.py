@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from functools import cached_property, lru_cache
+from pathlib import Path
 from typing import Literal
 from urllib.parse import urlsplit
 
@@ -24,6 +25,9 @@ class TranscribeConfig(BaseSettings):
     deepgram_language: str = Field("ru", alias="DEEPGRAM_LANGUAGE")
     deepgram_detect_language: bool = Field(False, alias="DEEPGRAM_DETECT_LANGUAGE")
     deepgram_utt_split: float = Field(0.8, alias="DEEPGRAM_UTT_SPLIT", gt=0)
+    # Кеш транскриптов для перезапуска без повторной оплаты STT. Пусто — каталог
+    # transcript_cache внутри WORK_DIR (вне workspace отдельных задач).
+    cache_dir: Path | None = Field(None, alias="TRANSCRIPT_CACHE_DIR")
 
     @model_validator(mode="after")
     def validate_provider(self) -> TranscribeConfig:
@@ -177,6 +181,29 @@ class S3Config(BaseSettings):
 class WorkerConfig(BaseSettings):
     model_config = _BASE
     max_concurrent_tasks: int = Field(2, alias="MAX_CONCURRENT_TASKS")
+    # TTL-очистка workspace упавших задач (см. docs/plans/2026-07-15-disk-cleanup-design.md).
+    cleanup_enabled: bool = Field(True, alias="WORK_DIR_CLEANUP_ENABLED")
+    failed_retention_hours: float = Field(
+        24, alias="WORK_DIR_FAILED_RETENTION_HOURS", ge=0, le=24 * 3650
+    )
+    sweep_interval_minutes: float = Field(
+        60, alias="WORK_DIR_SWEEP_INTERVAL_MINUTES", gt=0, le=60 * 24 * 365
+    )
+    # Срок хранения неиспользуемой записи кеша транскриптов (по mtime записи).
+    # Не меньше срока workspace упавшей задачи: кеш для того и нужен, чтобы
+    # перезапуск после удаления workspace не платил за STT повторно.
+    transcript_cache_retention_days: float = Field(
+        30, alias="TRANSCRIPT_CACHE_RETENTION_DAYS", gt=0, le=365
+    )
+
+    @model_validator(mode="after")
+    def validate_cache_retention(self) -> WorkerConfig:
+        if self.transcript_cache_retention_days * 24 < self.failed_retention_hours:
+            raise ValueError(
+                "TRANSCRIPT_CACHE_RETENTION_DAYS (в часах) не может быть меньше "
+                "WORK_DIR_FAILED_RETENTION_HOURS"
+            )
+        return self
 
 
 class MediaConfig(BaseSettings):

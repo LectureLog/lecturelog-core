@@ -24,6 +24,7 @@ from lecturelog.api.schemas import (
     ResultUrlResponse,
     TaskStatusResponse,
     TranscriptFailedError,
+    TranscriptGoneError,
     TranscriptInvalidFormatError,
     TranscriptNotFoundError,
     UploadUrlRequest,
@@ -318,6 +319,10 @@ async def delete_task(
             "model": TranscriptFailedError,
             "description": "Транскрибация завершилась ошибкой",
         },
+        410: {
+            "model": TranscriptGoneError,
+            "description": "Задача упала, транскрипта нет (не дошла до STT или удалён по TTL)",
+        },
     },
 )
 async def get_task_transcript(
@@ -374,6 +379,13 @@ async def get_task_transcript(
                 media_type="text/plain; charset=utf-8",
                 headers={"Content-Disposition": 'attachment; filename="transcript.txt"'},
             )
+
+    if not result.ready and task.status == TaskStatus.FAILED:
+        # Упавшая задача транскрипт не получит: не маскируем под in_progress.
+        return JSONResponse(
+            status_code=410,
+            content={"error": "transcript_unavailable", "detail": task.error},
+        )
 
     if not result.ready:
         return JSONResponse(

@@ -72,9 +72,15 @@ services:
       S3_SECRET_KEY: ${S3_SECRET_KEY:?S3_SECRET_KEY is required}
       # S3_PUBLIC_ENDPOINT не задан -> presigned выключен (автономный режим):
       # /uploads и /result-url отдают 409, стрим GET /result работает.
+    volumes:
+      # Только кеш транскриптов: он должен переживать пересоздание контейнера
+      # (деплой нового образа), иначе перезапуск лекции снова платит за STT.
+      # Остальной WORK_DIR остаётся во writable layer.
+      - lecturelog-core-transcript-cache:/app/data/transcript_cache
     ports:
       - "8000:8000"
 
 volumes:
   pgdata:
   miniodata:
+  lecturelog-core-transcript-cache:
