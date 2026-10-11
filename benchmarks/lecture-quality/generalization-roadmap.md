@@ -76,6 +76,30 @@ wrong-topic rate 11.9%, high-confidence error rate 13.0%, verified precision 100
 (26/26). This is a snapshot, not a passed gate: no revision has been evaluated against
 unseen data since `2026-03-12` was retired.
 
+### Split of the new lecturers (2026-10-11, fixed before any run)
+
+Two new lecturers were added: a databases course (video recording + PPTX deck) and a
+compilers course (audio recording + PDF deck). Rule, chosen after download and before any
+pipeline run, judging or listening: for each lecturer the earlier lecture goes to validation and the later
+one to the hidden holdout, so each style is checked in both sets.
+
+| Lecture | Lecturer / modality | Split | Files under `test-data/` |
+| --- | --- | --- | --- |
+| `db-2026-09-24` | databases, video + PPTX | validation | `document-slide-alignment/db-2026-09-24/` |
+| `compilers-anf` | compilers, audio + PDF | validation | `document-slide-alignment/compilers-anf/` |
+| `db-2026-10-07` | databases, video + PPTX | holdout | `holdout/db-2026-10-07/` |
+| `compilers-riscv` | compilers, audio + PDF | holdout | `holdout/compilers-riscv/` |
+
+- Video lectures keep both `lecture.mp4` (stages 2 and 3) and the extracted
+  `lecture.m4a` (document mode); `test-data/` is not tracked by git.
+- Holdout lectures live in a separate directory and must not be processed, judged or
+  listened to before stage 4. Opening one retires it to development.
+- Not taken from the source folder: a deck without a recording (`090parsing.pdf`) and
+  recordings without a deck (`Комп4.m4a`, `Комп5.m4a`).
+- This supersedes the 2026-07-29 consequences above: validation is no longer empty
+  (2 lectures) and the holdout is assembled (2 lectures); both are still below the
+  targets in "Target dataset size".
+
 ## Coverage matrix
 
 Select lectures by matcher behaviour, not only by academic subject. The benchmark should
@@ -100,6 +124,21 @@ eventually contain at least 2–3 independent examples of each high-risk class:
 
 A lecture may cover several classes. A large collection of nearly identical sequential
 lectures does not substitute for this coverage.
+
+### Coverage so far (2026-10-11)
+
+Behaviour classes are assigned from judge labels, never by guessing. Holdout lectures
+stay unlabelled until stage 4.
+
+| Dimension | Covered by | Gap |
+| --- | --- | --- |
+| Lecturers | 3: the original single-lecturer series, databases, compilers | — |
+| Recording | audio (all), video with a separate deck (`db-*`) | — |
+| Deck format | PDF, PPTX (`db-*`) | — |
+| Behaviour classes on new validation | not labelled yet | judge labels from the baseline runs (stage 1, ticket 04) |
+| Mostly visual deck | none confirmed | still needed |
+| Slide and speech languages differ | none | still needed |
+| Irrelevant or wrong deck | none | still needed |
 
 ## Target dataset size
 
