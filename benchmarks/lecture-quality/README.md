@@ -29,8 +29,12 @@ not read these baselines until they have completed both passes of their own audi
 | `2026-07-29-judge-i-proper-nouns.md` | 2026-02-12 | I (runs G and H were not judged) |
 | `2026-07-29-judge-j-02-26.md` | 2026-02-26 | J, same configuration as I |
 | `2026-07-29-judge-k-03-12.md` | 2026-03-12 | K, first validation lecture |
+| `2026-10-11-baseline-db-v2.md` | db-2026-09-24 | stage 1 baseline, v2 |
+| `2026-10-11-baseline-anf-v2.md` | compilers-anf | stage 1 baseline, v2 |
+| `2026-10-11-baseline-anf-legacy.md` | compilers-anf | stage 1 baseline, legacy |
 
 Run configurations and cross-run analysis live in
-`docs/progress/2026-07-27-matcher-model-experiments.md`. Dataset splits and the release
+`docs/progress/2026-07-27-matcher-model-experiments.md`; the stage 1 baseline summary is
+`docs/progress/2026-10-11-stage1-baseline.md`. Dataset splits and the release
 gates live in `generalization-roadmap.md`.
 
