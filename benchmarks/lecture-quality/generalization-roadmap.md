@@ -85,11 +85,21 @@ one to the hidden holdout, so each style is checked in both sets.
 
 | Lecture | Lecturer / modality | Split | Files under `test-data/` |
 | --- | --- | --- | --- |
-| `db-2026-09-24` | databases, video + PPTX | validation | `document-slide-alignment/db-2026-09-24/` |
-| `compilers-anf` | compilers, audio + PDF | validation | `document-slide-alignment/compilers-anf/` |
+| `db-2026-09-24` | databases, video + PPTX | development (was validation) | `document-slide-alignment/db-2026-09-24/` |
+| `compilers-anf` | compilers, audio + PDF | development (was validation) | `document-slide-alignment/compilers-anf/` |
 | `db-2026-10-07` | databases, video + PPTX | holdout | `holdout/db-2026-10-07/` |
 | `compilers-riscv` | compilers, audio + PDF | holdout | `holdout/compilers-riscv/` |
+| `swe-2026-03-26` | software engineering (same lecturer as 02-12…05-07), audio + PDF | validation | `document-slide-alignment/swe-2026-03-26/` |
+| `swe-2026-04-09` | same | validation | `document-slide-alignment/swe-2026-04-09/` |
+| `swe-2026-04-23` | same | validation | `document-slide-alignment/swe-2026-04-23/` |
 
+- 2026-10-11: both validation lectures retired to development. Stage 1 (ticket 10)
+  calibrated `min_margin` on their slide-by-slide margins (`docs/progress/2026-10-11-stage1-after.md`),
+  so validation is empty again; the calibrated threshold is provisional until it is checked on
+  new validation lectures.
+- 2026-10-11: validation refilled with the three lectures of the development lecturer that were
+  never processed (03-26, 04-09, 04-23; 02-12, 02-26, 03-12 and 05-07 were already seen). Same
+  lecturer, so they check the threshold against overfitting to db/anf, not across lecturers.
 - Video lectures keep both `lecture.mp4` (stages 2 and 3) and the extracted
   `lecture.m4a` (document mode); `test-data/` is not tracked by git.
 - Holdout lectures live in a separate directory and must not be processed, judged or
