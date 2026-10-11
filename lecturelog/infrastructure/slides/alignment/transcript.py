@@ -22,8 +22,18 @@ def build_section_refs(topics: list[Topic]) -> tuple[SectionRef, ...]:
 def blocks_for_section(
     blocks: list[TranscriptBlock], section: SectionRef
 ) -> tuple[TranscriptBlock, ...]:
+    """Реплики раздела — ровно те, что получает его рендер.
+
+    Реплика принадлежит разделу, в который попадает её середина, по полуоткрытому
+    интервалу [начало, конец). Так реплика никогда не достаётся двум разделам:
+    после `snap_sections_to_cues` границы смежные (конец подтемы = начало первой
+    реплики следующей), и пересечение «включительно» отдавало реплику стыка обоим
+    соседям — в доказательства и в запрос судье под двумя разделами. Середина
+    повторяет правило самой нарезки: реплика, которую граница режет, уходит к той
+    стороне, где её большая часть, а при равенстве — к следующей подтеме.
+    """
     return tuple(
         block
         for block in blocks
-        if block.end_s >= section.start_s and block.start_s <= section.end_s
+        if section.start_s <= (block.start_s + block.end_s) / 2 < section.end_s
     )

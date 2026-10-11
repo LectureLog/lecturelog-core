@@ -100,18 +100,53 @@ class SlideCandidate:
     semantic_tier: Literal["explicit", "strong", "weak", "none"] = "none"
     visual_score: float | None = None
     competition_margin: float | None = None
+    # Кандидаты других разделов, с которыми сравнивался выбор при расчёте
+    # competition_margin. В выбор пути не входят: нужны, чтобы непривязанный
+    # из-за более сильного конкурента слайд ушёл в галерею этого конкурента.
+    competitors: tuple[SlideCandidate, ...] = ()
+    # Вердикт выдал судья-модель (а не лексический путь или восстановление после
+    # отказа судьи). Только такой кандидат может стать verified.
+    model_confirmed: bool = False
+
+
+# Почему слайд не привязан к месту речи (см. GLOSSARY.md):
+# - непривязанный (match_status="unbound") — кандидат с доказательством есть, но
+#   уверенности не хватает: `weak_evidence` — доказательство слабое,
+#   `deck_order_conflict` — путь по порядку колоды пропустил слайд,
+#   `stronger_competitor` — кандидат другого раздела совпадает с речью сильнее
+#   выбранного (margin ниже порога);
+# - неупомянутый (match_status="unmentioned") — `no_candidates` — ни одного
+#   кандидата с доказательством, `service_role` — служебная пустая страница,
+#   `alignment_failed` — выравнивание упало и слайд не оценивался,
+#   `legacy_mode` — старый режим не привязал слайд;
+# - колода-чужак (match_status="deck_mismatch") — `deck_mismatch`.
+SlideStatusReason = Literal[
+    "weak_evidence",
+    "deck_order_conflict",
+    "stronger_competitor",
+    "no_candidates",
+    "service_role",
+    "alignment_failed",
+    "legacy_mode",
+    "deck_mismatch",
+]
 
 
 @dataclass(frozen=True)
 class SlideAssignment:
     slide_num: int
-    match_status: Literal["discussed", "unmentioned", "duplicate", "deck_mismatch"]
+    match_status: Literal["discussed", "unbound", "unmentioned", "duplicate", "deck_mismatch"]
     global_section_id: int | None
     evidence_block_ids: tuple[int, ...]
     anchor_s: float | None
     assignment_confidence: Literal["verified", "probable", "unresolved"]
     score: float
     reason_code: str
+    # Заполнено только у непривязанных и неупомянутых слайдов.
+    status_reason: SlideStatusReason | None = None
+    # Вклад описания картинки в силу доказательства (visual_score · visual_weight);
+    # None — у кандидата нет визуальной оценки или кандидата нет вовсе.
+    visual_contribution: float | None = None
 
 
 @dataclass(frozen=True)

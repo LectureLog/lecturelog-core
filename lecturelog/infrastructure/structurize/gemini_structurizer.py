@@ -19,18 +19,23 @@ from lecturelog.domain.slides import (
 )
 from lecturelog.infrastructure.llm.llm_client import LlmClient
 from lecturelog.infrastructure.slides.alignment.anchoring import anchor_assignment
-from lecturelog.infrastructure.slides.alignment.catalog import native_text_fallback
+from lecturelog.infrastructure.slides.alignment.catalog import (
+    detect_boilerplate_lines,
+    native_text_fallback,
+)
 from lecturelog.infrastructure.slides.alignment.diagnostics import write_diagnostic
 from lecturelog.infrastructure.slides.alignment.service import (
     AlignmentTuning,
     DocumentAlignmentService,
 )
 from lecturelog.infrastructure.srt import (
+    extract_srt_cue_range,
     extract_srt_fragment,
     format_srt_seconds,
     format_time,
     parse_srt_blocks,
     parse_srt_time,
+    snap_sections_to_cues,
 )
 from lecturelog.infrastructure.structurize.slide_backfill import backfill_missing_slides
 from lecturelog.infrastructure.structurize.slide_mapping import normalize_slide_mapping
@@ -113,6 +118,31 @@ def _slide_context_block(entries: list[SlideCatalogEntry]) -> str:
         "Это справочник написаний, а не источник содержания: не добавляй в"
         " конспект факты со слайдов, которых не было в речи лектора.\n\n" + ", ".join(names) + "\n"
     )
+
+
+def _section_spelling_slides(
+    assignments: tuple[SlideAssignment, ...],
+    catalog: dict[int, SlideCatalogEntry],
+) -> dict[int, list[int]]:
+    """Номера страниц колоды для справочника написаний каждого раздела.
+
+    Справочник со всей колоды подставлял в раздел имена с чужих слайдов
+    («Уолли» вместо Alice, «JetBrains» вместо ЯДРО). Поэтому раздел получает
+    только слайды, привязанные к нему по выравниванию (и inline, и галерея
+    раздела — у обоих задан раздел), плюс соседние по номеру страницы (±1):
+    слайд с искажённым ASR термином часто не привязывается сам, но лектор
+    обычно показывает его рядом с привязанным. Раздел без привязанных слайдов
+    получает пустой справочник.
+    """
+    bound: dict[int, set[int]] = {}
+    for assignment in assignments:
+        if assignment.global_section_id is None:
+            continue
+        pages = bound.setdefault(assignment.global_section_id, set())
+        for num in (assignment.slide_num - 1, assignment.slide_num, assignment.slide_num + 1):
+            if num in catalog:
+                pages.add(num)
+    return {section_id: sorted(pages) for section_id, pages in bound.items()}
 
 
 async def _emit_progress(on_progress: ProgressCallback | None, value: int) -> None:
@@ -278,16 +308,22 @@ class GeminiStructurizer(Structurizer):
         semaphore: asyncio.Semaphore,
         slide_context: str = "",
         on_usage: UsageCallback | None = None,
+        cue_range: tuple[int, int] | None = None,
     ) -> tuple[int, Section]:
         title = str(section_data["title"])
         start = str(section_data["start"])
         end = str(section_data["end"])
 
-        fragment = extract_srt_fragment(srt_content, start, end)
+        if cue_range is not None:
+            fragment = extract_srt_cue_range(srt_content, *cue_range)
+        else:
+            fragment = extract_srt_fragment(srt_content, start, end)
         prompt = section_prompt_template.format(title=title, start=start, end=end)
+        prompt = f"{prompt}\n{fragment}"
+        # Справочник идёт после SRT: шаблон кончается заголовком транскрипта, и
+        # блок между ним и репликами модель прочла бы как речь лектора.
         if slide_context:
             prompt = f"{prompt}\n{slide_context}"
-        prompt = f"{prompt}\n{fragment}"
 
         related_images = [
             slide_bytes[idx - 1] for idx in slide_indices if 1 <= idx <= len(slide_bytes)
@@ -381,6 +417,7 @@ class GeminiStructurizer(Structurizer):
 
         topics_sections: list[list[dict[str, Any]]] = [sections for _, sections in subsplit_results]
         _repair_section_timeline(topics_sections, srt_content)
+        cue_ranges = snap_sections_to_cues(topics_sections, srt_content)
 
         v2_assignments: tuple[SlideAssignment, ...] = ()
         v2_catalog: dict[int, SlideCatalogEntry] = {}
@@ -411,6 +448,7 @@ class GeminiStructurizer(Structurizer):
                             "unresolved",
                             0.0,
                             "alignment_error",
+                            status_reason="alignment_failed",
                         )
                         for asset in slide_assets
                     )
@@ -486,10 +524,7 @@ class GeminiStructurizer(Structurizer):
         section_prompt_template = self._read_prompt("section_v1.md")
         render_sem = asyncio.Semaphore(self._concurrency_render)
 
-        # Написания берём со всей колоды, а не только с привязанных слайдов:
-        # слайд теряется как раз тогда, когда ASR исказил его термин, и без него
-        # подсказка не дойдёт именно туда, где нужна (ENIAC → «Мониак»).
-        slide_context = _slide_context_block([v2_catalog[num] for num in sorted(v2_catalog)])
+        section_spelling_slides = _section_spelling_slides(v2_assignments, v2_catalog)
 
         render_tasks = []
         global_idx = 0
@@ -510,9 +545,15 @@ class GeminiStructurizer(Structurizer):
                             slide_bytes=slide_bytes
                             if self._document_alignment_mode != "v2"
                             else [],
-                            slide_context=slide_context,
+                            slide_context=_slide_context_block(
+                                [
+                                    v2_catalog[num]
+                                    for num in section_spelling_slides.get(global_idx, ())
+                                ]
+                            ),
                             semaphore=render_sem,
                             on_usage=on_usage,
+                            cue_range=cue_ranges[global_idx] if cue_ranges else None,
                         )
                     )
                 )
@@ -538,6 +579,10 @@ class GeminiStructurizer(Structurizer):
                     section = rendered[gidx]
                     topic_sections.append(section)
                     topic_slide_idxs.extend(section.slide_indices)
+
+            if not topic_sections:
+                # Все подтемы схлопнулись при сдвиге к границам реплик.
+                continue
 
             seen: set[int] = set()
             unique_slides: list[int] = []
@@ -566,7 +611,12 @@ class GeminiStructurizer(Structurizer):
         if self._document_alignment_mode == "v2":
             placements: list[SlidePlacement] = []
             assets_by_num = {asset.slide_num: asset for asset in slide_assets}
+            # Колонтитулы колоды не различают слайды — как и в каталоге выравнивания.
+            boilerplate = detect_boilerplate_lines(slide_assets)
             flat_sections = [section for topic in result for section in topic.sections]
+            # Реплики-доказательства указывают, какой абзац раздела пересказывает
+            # момент показа слайда; номера — те же, что дал выравниванию parse_srt_blocks.
+            cue_text = {block.block_id: block.text for block in parse_srt_blocks(srt_content)}
             for assignment in v2_assignments:
                 if assignment.match_status == "duplicate":
                     placements.append(
@@ -579,7 +629,9 @@ class GeminiStructurizer(Structurizer):
                         )
                     )
                     continue
-                entry_result = native_text_fallback(assets_by_num[assignment.slide_num])
+                entry_result = native_text_fallback(
+                    assets_by_num[assignment.slide_num], boilerplate=boilerplate
+                )
                 if assignment.global_section_id is not None and assignment.global_section_id < len(
                     flat_sections
                 ):
@@ -588,6 +640,9 @@ class GeminiStructurizer(Structurizer):
                         assignment,
                         entry_result.entry,
                         section.content,
+                        evidence_text=" ".join(
+                            cue_text.get(block_id, "") for block_id in assignment.evidence_block_ids
+                        ),
                     )
                 else:
                     placement = SlidePlacement(
@@ -643,6 +698,7 @@ class GeminiStructurizer(Structurizer):
                         "unresolved",
                         0.0,
                         "legacy_unassigned",
+                        status_reason="legacy_mode",
                     )
                 )
                 placements.append(

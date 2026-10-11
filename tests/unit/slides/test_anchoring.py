@@ -136,3 +136,46 @@ def test_gallery_is_placed_after_section_content() -> None:
 
     assert placement.output_kind == "section_gallery"
     assert placement.gallery_position == "after_content"
+
+
+def test_marker_follows_block_with_evidence_speech_not_strongest_lexical_match() -> None:
+    """Слайд 38 db-2026-09-24: лексика слайда сильнее в первом абзаце («СУБД»),
+    но реплика-доказательство пересказана в последнем — маркер встаёт там."""
+    assignment = SlideAssignment(38, "discussed", 17, (1239,), 3243.9, "verified", 55.5, "matched")
+    entry = SlideCatalogEntry(
+        38, "content", "Функции СУБД", "СУБД\nслой бизнес-логики\nслой хранения данных"
+    )
+    markdown = (
+        "Что такое **СУБД**? Это система, реализующая постоянное хранение данных.\n\n"
+        "> [!tangent]- Отступление от темы\n> Этот слайд мы уже видели.\n\n"
+        "В качестве примера проникновения слоев архитектуры между программными "
+        "компонентами здесь представлены интерфейс пользователя, слой бизнес-логики "
+        "и слой хранения данных."
+    )
+
+    anchored, placement = anchoring.anchor_assignment(
+        assignment,
+        entry,
+        markdown,
+        evidence_text="Пример проникновения слоев архитектуры между программными компонентами",
+    )
+
+    assert placement.output_kind == "inline"
+    assert placement.block_index == 2
+    assert anchored.endswith("слой хранения данных.\n\n<!-- slide:38 -->")
+
+
+def test_equal_evidence_match_prefers_earlier_paragraph() -> None:
+    """Реплика пересказана в двух абзацах одинаково — слайд встаёт у первого."""
+    assignment = SlideAssignment(1, "discussed", 0, (1,), 1.0, "verified", 10.0, "matched")
+    entry = SlideCatalogEntry(1, "content", "Бинарное дерево", "бинарное дерево поиска")
+    paragraph = "Бинарное дерево поиска хранит ключи упорядоченно."
+
+    _, placement = anchoring.anchor_assignment(
+        assignment,
+        entry,
+        f"Введение.\n\n{paragraph}\n\n{paragraph}",
+        evidence_text="бинарное дерево поиска хранит ключи",
+    )
+
+    assert placement.block_index == 1

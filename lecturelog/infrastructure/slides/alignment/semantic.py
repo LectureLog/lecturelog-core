@@ -67,4 +67,5 @@ def validate_semantic_response(
         lexical_score=candidate.lexical_score,
         semantic_tier=response.semantic_tier,
         visual_score=candidate.visual_score,
+        model_confirmed=True,
     )

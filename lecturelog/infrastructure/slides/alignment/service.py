@@ -35,7 +35,11 @@ from lecturelog.infrastructure.slides.alignment.semantic import (
     parse_semantic_match,
     validate_semantic_response,
 )
-from lecturelog.infrastructure.slides.alignment.sequence import AlignmentWeights, align_sequence
+from lecturelog.infrastructure.slides.alignment.sequence import (
+    AlignmentWeights,
+    align_sequence,
+    candidate_score,
+)
 from lecturelog.infrastructure.srt import parse_srt_blocks, parse_srt_time
 
 logger = logging.getLogger(__name__)
@@ -158,6 +162,7 @@ class DocumentAlignmentService:
                 blocks,
                 limit=self._tuning.candidate_limit,
                 neighbor_radius=self._tuning.neighbor_radius,
+                weights=self._tuning.weights,
             )
             candidates[asset.slide_num] = await self._verify(
                 entry,
@@ -203,6 +208,7 @@ class DocumentAlignmentService:
                         "unresolved",
                         item.score,
                         "deck_guard_insufficient_grounded_coverage",
+                        status_reason="deck_mismatch",
                     )
                     for item in assignments
                 ),
@@ -269,7 +275,7 @@ class DocumentAlignmentService:
         if not candidates:
             return ()
         if self._llm is None or not self._models or not catalog_verified:
-            grounded = self._lexical_ground(entry, candidates, blocks)
+            grounded = self._lexical_ground(entry, candidates, blocks, self._tuning.weights)
             return (grounded,) if grounded else ()
         payload = {
             "slide": {
@@ -279,6 +285,9 @@ class DocumentAlignmentService:
                 "source_concepts": entry.source_concepts,
                 "transcript_language_terms": entry.transcript_language_terms,
                 "formulas": entry.formulas,
+                # Описание картинки уже оплачено каталогом: для схемы без текста
+                # это единственное содержание страницы, которое видит судья.
+                "visual_summary": entry.visual_summary,
             },
             "candidates": [
                 {
@@ -342,9 +351,9 @@ class DocumentAlignmentService:
                     and second.global_section_id == first_verdict.global_section_id
                     and _tier_at_least(second.semantic_tier, "strong")
                 ):
-                    return (self._with_competition(second, candidates),)
+                    return (self._with_competition(second, candidates, self._tuning.weights),)
                 return self._global_recovery(entry, sections, blocks)
-            return (self._with_competition(first, candidates),)
+            return (self._with_competition(first, candidates, self._tuning.weights),)
         except Exception as error:
             logger.warning(
                 "semantic verification failed closed for slide %d: %s",
@@ -354,12 +363,18 @@ class DocumentAlignmentService:
             return self._global_recovery(entry, sections, blocks)
 
     @staticmethod
-    def _lexical_ground(entry, candidates, blocks) -> SlideCandidate | None:
-        # Backwards-compatible, deterministic path for tests/offline operation.
+    def _lexical_ground(
+        entry, candidates, blocks, weights: AlignmentWeights
+    ) -> SlideCandidate | None:
+        """Детерминированная привязка без судьи: для офлайн-режима и тестов.
+
+        Берёт блок раздела, текст которого подтверждает страницу, и ставит
+        потолок `strong`: модель совпадение не подтверждала.
+        """
         by_id = {block.block_id: block for block in blocks}
         matches = []
         for candidate in candidates:
-            if candidate.lexical_score <= 1.0:
+            if candidate_score(candidate, weights, with_verdict=False) <= 1.0:
                 continue
             for block_id in candidate.evidence_block_ids:
                 block = by_id[block_id]
@@ -390,18 +405,23 @@ class DocumentAlignmentService:
                 "strong",
                 candidate.visual_score,
             )
-            return DocumentAlignmentService._with_competition(grounded, candidates)
+            return DocumentAlignmentService._with_competition(grounded, candidates, weights)
         return None
 
     @staticmethod
-    def _with_competition(candidate, candidates):
-        alternatives = [
-            item.lexical_score
-            for item in candidates
-            if item.global_section_id != candidate.global_section_id
-        ]
-        margin = candidate.lexical_score - max(alternatives) if alternatives else None
-        return replace(candidate, competition_margin=margin)
+    def _with_competition(candidate, candidates, weights: AlignmentWeights):
+        competitors = tuple(
+            item for item in candidates if item.global_section_id != candidate.global_section_id
+        )
+        # Отрыв считается по силе совпадения с речью — лексика плюс описание
+        # картинки, — без бонуса вердикта: у конкурентов судьи не было.
+        margin = (
+            candidate_score(candidate, weights, with_verdict=False)
+            - max(candidate_score(item, weights, with_verdict=False) for item in competitors)
+            if competitors
+            else None
+        )
+        return replace(candidate, competition_margin=margin, competitors=competitors)
 
     def _global_recovery(self, entry, sections, blocks):
         recovered_pool = generate_candidates(
@@ -410,8 +430,9 @@ class DocumentAlignmentService:
             blocks,
             limit=len(sections),
             neighbor_radius=0,
+            weights=self._tuning.weights,
         )
-        recovered = self._lexical_ground(entry, recovered_pool, blocks)
+        recovered = self._lexical_ground(entry, recovered_pool, blocks, self._tuning.weights)
         if recovered is None:
             return ()
         # Тот же потолок, что и у `_lexical_ground`: без участия модели вердикт
@@ -435,6 +456,7 @@ class DocumentAlignmentService:
                         "unresolved",
                         item.score,
                         f"service_role:{entry.role}",
+                        status_reason="service_role",
                     )
                 )
             else:
@@ -449,8 +471,9 @@ class DocumentAlignmentService:
         #
         # Связь попарная, поэтому и считается по парам: связь с одной страницей
         # не оправдывает коллизию с любой другой. Внутри group_id связь замкнута
-        # (три одинаковых страницы попадают в одну группу дублей), поэтому
-        # участники группы связаны друг с другом все со всеми.
+        # (три одинаковых страницы попадают в одну группу дублей, все шаги одной
+        # сборки — в группу её первого шага), поэтому участники группы связаны
+        # друг с другом все со всеми.
         groups: dict[str, set[int]] = {}
         for relation in relations:
             groups.setdefault(relation.group_id, set()).update(
