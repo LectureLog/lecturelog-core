@@ -44,7 +44,7 @@ logger = logging.getLogger(__name__)
 
 
 def _repair_section_timeline(topics_sections: list[list[dict[str, Any]]], srt_content: str) -> None:
-    """Чинит секции, у которых сплиттер выдал end <= start.
+    """Чинит секции, у которых сплиттер выдал end <= start или не выдал end вовсе.
 
     Битая граница обходится дорого: ffmpeg падает на нарезке («-to value smaller
     than -ss») уже после того, как потрачены транскрипция и все LLM-стадии, а
@@ -52,6 +52,8 @@ def _repair_section_timeline(topics_sections: list[list[dict[str, Any]]], srt_co
     «invalid section timeline»). Чиним по соседям — конец битой секции берём из
     начала следующей, а для последней секции из конца транскрипта, — потому что
     содержание секции при этом уже отрендерено и терять его незачем.
+
+    Тот же путь чинит и темы: им достаточно передать список тем одним «разделом».
     """
 
     flat = [section for sections in topics_sections for section in sections]
@@ -61,8 +63,8 @@ def _repair_section_timeline(topics_sections: list[list[dict[str, Any]]], srt_co
     transcript_end = max((block.end_s for block in parse_srt_blocks(srt_content)), default=0.0)
     for index, section in enumerate(flat):
         start = parse_srt_time(str(section["start"]))
-        end = parse_srt_time(str(section["end"]))
-        if end > start:
+        raw_end = section.get("end")
+        if raw_end not in (None, "") and parse_srt_time(str(raw_end)) > start:
             continue
 
         repaired = next(
@@ -76,12 +78,19 @@ def _repair_section_timeline(topics_sections: list[list[dict[str, Any]]], srt_co
             ),
             start + 1.0,
         )
-        logger.warning(
-            "секция %r имеет end <= start (%s → %s); конец исправлен по соседям",
-            section.get("title"),
-            section["start"],
-            section["end"],
-        )
+        if raw_end in (None, ""):
+            logger.warning(
+                "секция %r пришла без end (start %s); конец достроен по соседям",
+                section.get("title"),
+                section["start"],
+            )
+        else:
+            logger.warning(
+                "секция %r имеет end <= start (%s → %s); конец исправлен по соседям",
+                section.get("title"),
+                section["start"],
+                raw_end,
+            )
         section["end"] = format_srt_seconds(repaired)
 
 
@@ -388,6 +397,8 @@ class GeminiStructurizer(Structurizer):
         topics_data = _parse_json(split_raw)
         if not isinstance(topics_data, list):
             raise ValueError("Ответ split_topics должен быть JSON-массивом")
+        # Конец темы нужен уже для нарезки фрагмента под subsplit.
+        _repair_section_timeline([topics_data], srt_content)
         await _emit_progress(on_progress, 10)
 
         # ── Этап 2: Subsplit (10% → 30%) ───────────────────────────
