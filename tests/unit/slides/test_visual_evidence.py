@@ -13,6 +13,7 @@ import pytest
 
 from lecturelog.domain.slides import SlideAsset
 from lecturelog.infrastructure.slides.alignment.diagnostics import write_diagnostic
+from lecturelog.infrastructure.slides.alignment.sequence import AlignmentWeights
 from lecturelog.infrastructure.slides.alignment.service import (
     AlignmentTuning,
     DocumentAlignmentService,
@@ -196,12 +197,12 @@ async def test_visual_evidence_reaches_verified_and_diagnostic_shows_its_contrib
     assert (diagram.match_status, diagram.global_section_id) == ("discussed", 1)
     assert diagram.assignment_confidence == "verified"
     assert ":visual=1.000:" in diagram.reason_code
-    assert diagram.visual_contribution == pytest.approx(3.0)
+    assert diagram.visual_contribution == pytest.approx(2.25)
 
     path = tmp_path / "diagnostic.json"
     write_diagnostic(path, mode="document", assignments=result.assignments)
     saved = json.loads(path.read_text(encoding="utf-8"))["assignments"]
-    assert saved[1]["visual_contribution"] == pytest.approx(3.0)
+    assert saved[1]["visual_contribution"] == pytest.approx(2.25)
     # У слайда без описания вклада нет.
     assert saved[0]["visual_contribution"] is None
 
@@ -229,7 +230,7 @@ _HTTP_SLIDE = {
 _HTTP_VERDICT = _semantic(2, 1, [3], "Протокол HTTP, метод запроса.", "explicit")
 
 
-async def _align_http_slide(tmp_path, visual_summary: str):
+async def _align_http_slide(tmp_path, visual_summary: str, tuning: AlignmentTuning | None = None):
     llm = ScriptedLlm(
         [
             _catalog_response(_COURSE_SLIDE, {**_HTTP_SLIDE, "visual_summary": visual_summary}),
@@ -237,7 +238,9 @@ async def _align_http_slide(tmp_path, visual_summary: str):
             _HTTP_VERDICT,
         ]
     )
-    service = DocumentAlignmentService(llm=llm, models=["m"], prompts_dir=_prompts(tmp_path))
+    service = DocumentAlignmentService(
+        llm=llm, models=["m"], prompts_dir=_prompts(tmp_path), tuning=tuning or AlignmentTuning()
+    )
     result = await service.align(
         assets=_assets(tmp_path, 2), section_layout=_LAYOUT, srt_content=_HTTP_SRT
     )
@@ -248,16 +251,21 @@ async def _align_http_slide(tmp_path, visual_summary: str):
 async def test_visual_summary_of_text_rich_slide_does_not_create_stronger_competitor(tmp_path):
     """Описание картинки целиком совпадает с речью раздела-конкурента.
 
-    Будь его вес полным (+3), отрыв выбора упал бы ниже порога margin (−5) и
-    слайд ушёл бы непривязанным к конкуренту, хотя текст страницы и цитата
-    судьи указывают на раздел 1. Вес описания пропорционален его доле в
-    содержании страницы, поэтому у слайда с богатым текстом оно остаётся
-    добавкой: привязка и уверенность те же, что и без описания, вызовов LLM
-    столько же.
+    Лексический отрыв выбора здесь уже −2.28. Будь вес описания полным, отрыв
+    упал бы ниже порога margin, и слайд ушёл бы непривязанным к конкуренту, хотя
+    текст страницы и цитата судьи указывают на раздел 1. Вес описания
+    пропорционален его доле в содержании страницы, поэтому у слайда с богатым
+    текстом оно остаётся добавкой (−0.96): привязка и уверенность те же, что и
+    без описания, вызовов LLM столько же. Порог −5 задан явно: тест про долю
+    описания, а не про калибровку порога — при дефолтных −2.5 запас у этой
+    фикстуры 0.2, и добавка его съедает.
     """
-    without, calls_without = await _align_http_slide(tmp_path, "")
+    tuning = AlignmentTuning(weights=AlignmentWeights(min_margin=-5.0))
+    without, calls_without = await _align_http_slide(tmp_path, "", tuning)
     with_visual, calls_with = await _align_http_slide(
-        tmp_path, "Схема: прямоугольники браузера и веб-сервера соединены стрелками сообщений."
+        tmp_path,
+        "Схема: прямоугольники браузера и веб-сервера соединены стрелками сообщений.",
+        tuning,
     )
 
     assert (without.match_status, without.global_section_id) == ("discussed", 1)

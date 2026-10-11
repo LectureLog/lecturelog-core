@@ -174,11 +174,13 @@ async def test_slide_skipped_by_deck_order_goes_to_gallery_of_its_section(tmp_pa
     """Лектор вернулся к слайду 2 после слайда 1 из последнего раздела.
 
     Путь по порядку колоды выгоднее пропускает слайд 2, чем возвращается на
-    пять разделов назад. Но у слайда есть кандидат с доказательством — значит,
+    семь разделов назад. Но у слайда есть кандидат с доказательством — значит,
     он непривязанный и стоит в галерее раздела 0, а не в приложении.
     """
     srt = _srt(
         "Вспомним про жизненный цикл программы.",
+        "Пауза.",
+        "Пауза.",
         "Пауза.",
         "Пауза.",
         "Пауза.",
@@ -204,13 +206,13 @@ async def test_slide_skipped_by_deck_order_goes_to_gallery_of_its_section(tmp_pa
                 native_text_quality="good",
             ),
         ],
-        section_layout=_layout(6),
+        section_layout=_layout(8),
         srt_content=srt,
     )
     spiral, cycle = result.assignments
 
     assert spiral.match_status == "discussed"
-    assert spiral.global_section_id == 5
+    assert spiral.global_section_id == 7
     assert cycle.match_status == "unbound"
     assert cycle.global_section_id == 0
     assert cycle.status_reason == "deck_order_conflict"

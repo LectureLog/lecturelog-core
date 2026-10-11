@@ -141,24 +141,53 @@ def detect_progressive_builds(
 
     This is deliberately conservative: progressive pages are *related*, not
     duplicates, and therefore must remain eligible for placement.
+
+    Вложенность считается по содержанию страницы — без колонтитулов
+    (`detect_boilerplate_lines`): колонтитул есть на каждой странице, и две
+    страницы с коротким разным телом иначе выглядят как шаги одной сборки.
+    Исключение — предыдущая страница, у которой кроме колонтитулов ничего нет:
+    в маленькой колоде, целиком состоящей из одной сборки, строки первого шага
+    повторяются на всех страницах и сами попадают в колонтитулы; тело такой
+    страницы сравнивать не с чем, и вложенность считается по полному тексту.
     """
+    boilerplate = detect_boilerplate_lines(assets)
     relations: list[SlideRelation] = []
+    # Первый шаг сборки, к которой относится страница. Шаги 3→4→5 — одна
+    # страница в трёх видах, поэтому группа у всей цепочки общая (по первому
+    # шагу), а не «предыдущий шаг»: иначе 3 и 5 оказываются в разных группах и
+    # защита от коллизий доказательств понижает крайние шаги.
+    chain_root: dict[int, int] = {}
     for previous, current in zip(assets, assets[1:], strict=False):
         previous_tokens = _catalog_tokens(previous.extracted_text or "")
         current_tokens = _catalog_tokens(current.extracted_text or "")
         if len(previous_tokens) < 4 or len(current_tokens) <= len(previous_tokens):
             continue
+        previous_body = _catalog_tokens(_without_boilerplate(previous, boilerplate))
+        if previous_body:
+            previous_tokens = previous_body
+            current_tokens = _catalog_tokens(_without_boilerplate(current, boilerplate))
         containment = len(previous_tokens & current_tokens) / len(previous_tokens)
         if containment >= containment_threshold:
+            root = chain_root.get(previous.slide_num, previous.slide_num)
+            chain_root[current.slide_num] = root
             relations.append(
                 SlideRelation(
                     current.slide_num,
                     "progressive_build",
-                    f"progressive:{previous.slide_num}",
+                    f"progressive:{root}",
                     previous.slide_num,
                 )
             )
     return tuple(relations)
+
+
+def _without_boilerplate(asset: SlideAsset, boilerplate: frozenset[str]) -> str:
+    """Текст страницы без строк-колонтитулов колоды."""
+    return "\n".join(
+        line
+        for line in (asset.extracted_text or "").splitlines()
+        if line.strip() not in boilerplate
+    )
 
 
 def _catalog_tokens(text: str) -> set[str]:

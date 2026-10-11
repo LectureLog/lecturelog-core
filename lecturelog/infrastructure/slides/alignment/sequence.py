@@ -20,19 +20,20 @@ class AlignmentWeights:
     strong_bonus: float = 2.0
     lexical_weight: float = 1.0
     # Вес визуальной оценки (0..1, совпадение описания картинки с речью раздела).
-    # Полное совпадение даёт +3: больше подтверждения strong (+2) — описание
+    # Полное совпадение даёт +2.25: больше подтверждения strong (+2) — описание
     # покрыто речью целиком, — но меньше explicit (+4): цитату судьи оно не
     # заменяет. И строго меньше |min_margin|: одно описание не может само
-    # перевести слайд в `stronger_competitor`. Калибруется по базовой линии этапа.
-    visual_weight: float = 3.0
+    # перевести слайд в `stronger_competitor`. На validation этапа 1 визуальная
+    # оценка не превышала 0.27, поэтому вес выведен из этих границ, а не из данных.
+    visual_weight: float = 2.25
     progressive_same_section_bonus: float = 0.75
     # Порог margin выбора: ниже него слайд непривязанный с причиной
     # `stronger_competitor` на любом уровне уверенности. Margin выбора пути
     # неотрицателен, поэтому срабатывает только отрицательный competition_margin —
-    # конкурент из другого раздела лексически сильнее. Допуск −5 отсекает шум
-    # лексики (верный выбор получает до −0.4), а реальные промахи прогонов A–L
-    # лежат на −16…−22; точное значение калибруется по базовой линии этапа.
-    min_margin: float = -5.0
+    # конкурент из другого раздела сильнее. Калибровка на validation этапа 1
+    # (docs/progress/2026-10-11-stage1-after.md): неверные выборы пути лежат на
+    # −2.77 и ниже, верные — на −2.45 и выше, кроме двух около −6.
+    min_margin: float = -2.5
 
 
 def align_sequence(
@@ -51,6 +52,47 @@ def align_sequence(
         for relation in relations
         if relation.kind == "progressive_build"
     }
+    # Слайд, отвергнутый калибровкой из-за более сильного конкурента, остаётся
+    # непривязанным, но в пути он был якорем: уводил путь в свой раздел и мог
+    # вытолкнуть верного соседа в `deck_order_conflict`. Поэтому путь
+    # пересчитывается без отвергнутых, а их назначение берётся из прохода, где
+    # их отвергли (галерея по конкуренту, диагностика с выбором пути и margin).
+    #
+    # Одного повторного прохода мало: освободившееся место может занять слайд,
+    # который раньше путь пропускал, и его тоже отвергнут. Повторяем до
+    # неподвижной точки. Множество отвергнутых только растёт, поэтому проходов
+    # не больше числа слайдов плюс один; на практике — два. Каждый проход стоит
+    # одного `_solve` на путь и по одному на каждый выбранный слайд (path_margin).
+    rejected: dict[int, SlideAssignment] = {}
+    pool = candidates
+    for _ in range(len(slide_nums) + 1):
+        assignments, newly_rejected = _assign_path(
+            slide_nums, pool, duplicate_of, progressive_of, weights
+        )
+        if not newly_rejected:
+            break
+        rejected.update(
+            (item.slide_num, item) for item in assignments if item.slide_num in newly_rejected
+        )
+        pool = {
+            slide_num: () if slide_num in rejected else options
+            for slide_num, options in candidates.items()
+        }
+    return tuple(rejected.get(item.slide_num, item) for item in assignments)
+
+
+def _assign_path(
+    slide_nums: list[int],
+    candidates: dict[int, tuple[SlideCandidate, ...]],
+    duplicate_of: dict[int, int],
+    progressive_of: dict[int, int],
+    weights: AlignmentWeights,
+) -> tuple[list[SlideAssignment], set[int]]:
+    """Один проход: путь DP и назначения по нему.
+
+    Второй элемент — слайды, которые путь выбрал, а калибровка отвергла из-за
+    более сильного конкурента (`stronger_competitor`): они были якорями пути.
+    """
     best_total, best_path = _solve(
         slide_nums,
         candidates,
@@ -59,6 +101,7 @@ def align_sequence(
         weights,
     )
     assignments: list[SlideAssignment] = []
+    rejected: set[int] = set()
     for index, (slide_num, chosen) in enumerate(zip(slide_nums, best_path, strict=True)):
         if slide_num in duplicate_of:
             assignments.append(
@@ -135,6 +178,7 @@ def align_sequence(
         pool = candidates.get(slide_num, ())
         if calibration.unbound_reason == "stronger_competitor":
             pool = _gallery_pool(pool, [chosen])
+            rejected.add(slide_num)
         assignments.append(
             _unbound_or_unmentioned(
                 slide_num,
@@ -145,7 +189,7 @@ def align_sequence(
                 weights,
             )
         )
-    return tuple(assignments)
+    return assignments, rejected
 
 
 def _gallery_pool(
@@ -164,30 +208,51 @@ def strongest_candidate(
     weights: AlignmentWeights,
     *,
     preferred: SlideCandidate | None = None,
+    with_verdict: bool = True,
 ) -> SlideCandidate | None:
     """Кандидат с самым сильным доказательством — его раздел получает непривязанный слайд.
 
     Сила доказательства — та же оценка `candidate_score`, что и в выборе пути:
     `lexical_score * lexical_weight + бонус semantic_tier + visual_score * visual_weight`.
+    Без `with_verdict` бонус вердикта в сравнение не входит — это мера
+    `competition_margin`, по которой слайд и признан уступившим конкуренту.
     Порядок колоды в неё не входит: он подсказка для пути, а не свойство
     доказательства. Доказательством считается только кандидат, который сам по
-    себе сильнее пропуска слайда (`unmatched_score`). При равной силе выигрывает
-    `preferred` (выбор пути), затем более ранний раздел.
+    себе сильнее пропуска слайда (`unmatched_score`) и опирается на речь
+    (`_has_evidence`). При равной силе выигрывает `preferred` (выбор пути),
+    затем более ранний раздел.
     """
     evidence = [
         candidate
         for candidate in pool
-        if candidate_score(candidate, weights) > weights.unmatched_score
+        if _has_evidence(candidate)
+        and candidate_score(candidate, weights) > weights.unmatched_score
     ]
     if not evidence:
         return None
     return max(
         evidence,
         key=lambda candidate: (
-            candidate_score(candidate, weights),
+            candidate_score(candidate, weights, with_verdict=with_verdict),
             candidate is preferred,
             -candidate.global_section_id,
         ),
+    )
+
+
+def _has_evidence(candidate: SlideCandidate) -> bool:
+    """У кандидата есть доказательство из речи, а не только вердикт судьи.
+
+    Реплика, цитата, совпадение текста или описания картинки с речью — любое
+    из них. Вердикт `strong` без единого блока, без цитаты и с нулевой оценкой
+    ничего в речи не показывает: такой слайд по глоссарию неупомянутый, а не
+    непривязанный, и в галерею раздела идти не должен.
+    """
+    return bool(
+        candidate.evidence_block_ids
+        or candidate.evidence_quote
+        or candidate.lexical_score > 0
+        or (candidate.visual_score or 0.0) > 0
     )
 
 
@@ -199,8 +264,20 @@ def _unbound_or_unmentioned(
     margin: float | None,
     weights: AlignmentWeights,
 ) -> SlideAssignment:
-    """Слайд без уверенной привязки: галерея раздела с сильнейшим доказательством или приложение."""
-    strongest = strongest_candidate(pool, weights, preferred=chosen)
+    """Слайд без уверенной привязки: галерея раздела с сильнейшим доказательством или приложение.
+
+    Для `stronger_competitor` раздел галереи выбирается той же мерой, что и
+    порог (`competition_margin`, без бонуса вердикта): порог уже признал
+    конкурента сильнее, и бонус судьи за выбор пути не должен возвращать слайд
+    в раздел, которому он уступил. Для остальных причин конкурентов в пуле нет,
+    и сравниваются кандидаты пути с их вердиктами, как в выборе пути.
+    """
+    strongest = strongest_candidate(
+        pool,
+        weights,
+        preferred=chosen,
+        with_verdict=unbound_reason != "stronger_competitor",
+    )
     if strongest is None:
         return SlideAssignment(
             slide_num,

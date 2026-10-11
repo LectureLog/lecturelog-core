@@ -70,17 +70,17 @@ def _one(chosen, weights=W, relations=()):
 
 
 def test_margin_ровно_на_пороге_не_делает_слайд_непривязанным_потому_что_сравнение_строгое():
-    """Сравнение «<», а не «<=»: слайд на пороге остаётся привязанным; иначе порог −5 молча превращается в −4.99."""
-    item = _one(_c(1, 1, 3.0, cm=-5.0, comps=(_rival(1, 2, 8.0),)))
+    """Сравнение «<», а не «<=»: слайд на пороге остаётся привязанным; иначе порог −2.5 молча превращается в −2.49."""
+    item = _one(_c(1, 1, 3.0, cm=-2.5, comps=(_rival(1, 2, 5.5),)))
     assert item.match_status == "discussed"
 
 
 def test_margin_чуть_ниже_порога_делает_слайд_непривязанным_с_причиной_конкурента():
-    item = _one(_c(1, 1, 3.0, cm=-5.0001, comps=(_rival(1, 2, 8.0001),)))
+    item = _one(_c(1, 1, 3.0, cm=-2.5001, comps=(_rival(1, 2, 5.5001),)))
     assert (item.match_status, item.status_reason) == ("unbound", "stronger_competitor")
 
 
-@pytest.mark.parametrize("cm", [-0.4, -1.0, -4.999])
+@pytest.mark.parametrize("cm", [-0.4, -1.0, -2.499])
 def test_шумовой_отрицательный_margin_в_допуске_не_роняет_верный_выбор_в_непривязанные(cm):
     """Верный выбор получает до −0.4 из-за шума лексики: ложный unbound убирает слайд из текста без следа."""
     item = _one(_c(1, 1, 3.0, cm=cm, comps=(_rival(1, 2, 3.0 - cm),)))
@@ -174,20 +174,59 @@ def test_ничья_конкурентов_решается_ранним_раз�
         assert item.global_section_id == 2
 
 
-def test_ничья_выбора_и_конкурента_оставляет_слайд_в_разделе_выбора():
-    """Порог −4: конкурент отстоит на −5, но tier none (−1) уравнивает силу с explicit (+4) — побеждает выбор пути."""
+def test_ничья_с_бонусом_вердикта_не_оставляет_слайд_в_разделе_выбора_при_stronger_competitor():
+    """Порог −4: конкурент отстоит на −5. С бонусами (explicit +4, tier none −1) силы равны, но мера
+    галереи для stronger_competitor — та же, что у порога, без бонуса вердикта: слайд у конкурента."""
     item = _one(
         _c(1, 1, 2.0, cm=-5.0, comps=(_rival(1, 4, 7.0),)), AlignmentWeights(min_margin=-4.0)
     )
     assert item.status_reason == "stronger_competitor"
-    assert item.global_section_id == 1
+    assert item.global_section_id == 4
 
 
-def test_конкурент_слабее_по_силе_но_лексически_сильнее_оставляет_слайд_в_своём_разделе_с_причиной_конкурента():
-    """Решённая развилка: tier none вычитает 1, а у выбора с визуальным бонусом сила выше — слайд в своей галерее, но не привязан."""
+def test_конкурент_слабее_с_бонусом_вердикта_но_сильнее_мерой_порога_забирает_галерею():
+    """Решение владельца: с бонусами выбор сильнее (tier none −1 против explicit +4 и описания), но
+    раздел галереи stronger_competitor выбирается мерой порога — без бонуса вердикта, где конкурент
+    сильнее на 6. Слайд уходит к конкуренту."""
     item = _one(_c(1, 1, 2.0, cm=-6.0, visual=1.0, comps=(_rival(1, 4, 8.0),)))
-    assert (item.match_status, item.global_section_id) == ("unbound", 1)
+    assert (item.match_status, item.global_section_id) == ("unbound", 4)
     assert item.status_reason == "stronger_competitor"
+
+
+def test_галерея_stronger_competitor_выбирается_той_же_мерой_что_и_порог_поэтому_отрыв_между_порогом_и_бонусом_вердикта_уводит_к_конкуренту():
+    """Решение владельца: конкурент сильнее на 3.5 (порог −2.5) — слайд уходит к нему.
+
+    Бонус explicit (+4) в мере галереи перевешивал отрыв 2.5..5, и слайд оставался в галерее
+    раздела выбора, хотя порог только что признал конкурента сильнее.
+    """
+    item = _one(_c(1, 1, 3.0, cm=-3.5, comps=(_rival(1, 4, 6.5),)))
+    assert item.status_reason == "stronger_competitor"
+    assert (item.match_status, item.global_section_id) == ("unbound", 4)
+    assert item.evidence_block_ids == (5,)
+
+
+def test_пропущенный_путём_слайд_со_stronger_competitor_уходит_к_конкуренту_той_же_мерой():
+    """Ветка пропуска: выбор судьи explicit (+4) с лексикой 1.0 против конкурента 4.0 — отрыв −3."""
+    result = align_sequence(
+        [1, 2],
+        {
+            1: (_c(1, 5, 9.0, cm=3.0),),
+            2: (_c(2, 0, 1.0, cm=-3.0, comps=(_rival(2, 3, 4.0),)),),
+        },
+    )
+    assert (result[1].status_reason, result[1].global_section_id) == ("stronger_competitor", 3)
+
+
+def test_deck_order_conflict_выбирает_галерею_по_силе_с_бонусом_вердикта_как_раньше():
+    """Мера без бонуса вердикта — только для stronger_competitor; пропуск по порядку колоды её не меняет."""
+    result = align_sequence(
+        [1, 2],
+        {
+            1: (_c(1, 5, 9.0, cm=3.0),),
+            2: (_c(2, 0, 1.0, cm=2.0), _c(2, 1, 3.0, tier="weak", cm=2.0)),
+        },
+    )
+    assert (result[1].status_reason, result[1].global_section_id) == ("deck_order_conflict", 0)
 
 
 def test_визуальный_бонус_конкурента_входит_в_силу_и_переносит_галерею():
@@ -293,6 +332,58 @@ def test_непривязанный_по_конкуренту_слайд_не_м
     assert (a[0], a[2]) == (b[0], b[2])
 
 
+def test_отвергнутый_по_конкуренту_слайд_не_якорит_путь_и_не_выталкивает_верного_соседа_в_конфликт_порядка():
+    """Решение владельца: путь пересчитывается без отвергнутых слайдов.
+
+    Слайд 2 уводит путь в раздел 9 и отвергнут (конкурент сильнее на 20). Если он остаётся якорем,
+    возврат слайда 3 в раздел 3 стоит 9 > 6, и верный сосед уходит в deck_order_conflict.
+    """
+    result = align_sequence(
+        [1, 2, 3],
+        {
+            1: (_c(1, 2, 6.0, cm=3.0),),
+            2: (_c(2, 9, 3.0, cm=-20.0, comps=(_rival(2, 2, 23.0),)),),
+            3: (_c(3, 3, 4.0, tier="strong", cm=3.0),),
+        },
+    )
+    assert (result[1].match_status, result[1].status_reason) == ("unbound", "stronger_competitor")
+    assert result[1].global_section_id == 2
+    # Диагностика отвергнутого описывает выбор пути, при котором его отвергли.
+    assert "path_section=9" in result[1].reason_code
+    assert (result[2].match_status, result[2].global_section_id) == ("discussed", 3)
+    assert result[2].evidence_block_ids == (4,)
+
+
+def test_margin_соседа_считается_во_втором_проходе_без_отвергнутого_слайда():
+    """Без отвергнутого слайда 2 путь меняется так же, как если бы его не было вовсе."""
+    rejected = _c(2, 9, 3.0, cm=-20.0, comps=(_rival(2, 2, 23.0),))
+    neighbours = {1: (_c(1, 2, 6.0, cm=3.0),), 3: (_c(3, 3, 4.0, tier="strong", cm=3.0),)}
+    with_rejected = align_sequence([1, 2, 3], {**neighbours, 2: (rejected,)})
+    without = align_sequence([1, 2, 3], {**neighbours, 2: ()})
+    assert (with_rejected[0], with_rejected[2]) == (without[0], without[2])
+
+
+def test_второй_проход_доводит_до_неподвижной_точки_если_освободившееся_место_занял_ещё_один_отвергнутый():
+    """Слайд 3 в первом проходе пропущен, во втором выбран — и тоже отвергнут: якорем он не остаётся.
+
+    Проход 1: 1@2, 2@9 (отвергнут), 3 и 4 пропущены — возврат из 9 дороже их силы.
+    Проход 2 без 2: 1@2 и 3@6 (10.16) выгоднее 1@2 и 4@3 (10.0) — слайд 3 отвергнут, 4 снова пропущен.
+    Проход 3 без 2 и 3: слайд 4 в своём разделе. Одного повторного прохода здесь мало.
+    """
+    result = align_sequence(
+        [1, 2, 3, 4],
+        {
+            1: (_c(1, 2, 2.0, cm=3.0),),
+            2: (_c(2, 9, 3.0, cm=-20.0, comps=(_rival(2, 2, 23.0),)),),
+            3: (_c(3, 6, 0.4, cm=-9.0, comps=(_rival(3, 4, 9.4),)),),
+            4: (_c(4, 3, 2.0, tier="strong", cm=3.0),),
+        },
+    )
+    assert [item.status_reason for item in result[1:3]] == ["stronger_competitor"] * 2
+    assert "path_section=6" in result[2].reason_code
+    assert (result[3].match_status, result[3].global_section_id) == ("discussed", 3)
+
+
 def test_повторный_прогон_и_перестановка_конкурентов_дают_идентичный_результат():
     rng = random.Random(11)
     for _ in range(120):
@@ -366,7 +457,8 @@ def test_reason_code_ушедшего_к_конкуренту_слайда_на�
 
 
 def test_reason_code_оставшегося_в_своём_разделе_слайда_несёт_реальный_margin():
-    item = _one(_c(1, 1, 2.0, cm=-6.0, visual=1.0, comps=(_rival(1, 4, 8.0),)))
+    """Конкурент без доказательства в галерею не годится — слайд остаётся у выбора пути."""
+    item = _one(_c(1, 1, 3.0, cm=-6.0, comps=(_rival(1, 4, 0.2),)))
     assert "margin=-6.000" in item.reason_code
     assert "path_section" not in item.reason_code
 
@@ -512,7 +604,15 @@ async def test_unbound_по_конкуренту_не_понижает_сосе�
 
 @pytest.mark.asyncio
 async def test_порог_из_tuning_доходит_до_выравнивания_и_дефолт_равен_допуску_владельца(tmp_path):
-    assert AlignmentTuning().weights.min_margin == -5.0
+    defaults = AlignmentTuning().weights
+    # Калибровка тикета 10 по validation: неверные выборы пути лежат на margin ≤ −2.77,
+    # верные — на ≥ −2.45 (кроме двух у −6).
+    assert defaults.min_margin == -2.5
+    assert defaults.visual_weight == 2.25
+    # Описание картинки весит больше подтверждения strong, меньше explicit и само по
+    # себе не переводит слайд в `stronger_competitor`.
+    assert defaults.strong_bonus < defaults.visual_weight < defaults.explicit_bonus
+    assert defaults.visual_weight < abs(defaults.min_margin)
     course = dict(_COURSE_SLIDE, slide_num=2)
     std = dict(_STD, slide_num=1)
     responses = [
