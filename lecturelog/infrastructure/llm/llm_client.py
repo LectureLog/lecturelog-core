@@ -14,6 +14,7 @@ import base64
 import inspect
 import json
 import logging
+import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -36,6 +37,10 @@ _BYOK_AUTH_COOLDOWN_S = 300.0
 # следующая попытка должна уйти на другую модель, но выводить эту из ротации
 # надолго незачем — отказ транзиентный.
 _UPSTREAM_ERROR_COOLDOWN_S = 60.0
+# Сколько один вызов готов пережидать 5xx апстрима. Перегрузка Gemini на проде
+# длилась минутами, а пять попыток с бэк-оффом укладывались в ~30 с. Пока бюджет
+# не исчерпан, попытки на 5xx не расходуют retries.
+_UPSTREAM_BUDGET_S = 300.0
 
 
 async def _emit_usage(on_usage: UsageCallback | None, payload: dict) -> None:
@@ -123,10 +128,14 @@ class LlmClient:
         cooldown: ModelCooldown,
         *,
         max_tokens: int = _DEFAULT_MAX_TOKENS,
+        upstream_budget_s: float = _UPSTREAM_BUDGET_S,
+        clock: Callable[[], float] | None = None,
     ) -> None:
         self._client = async_openai_client
         self._cooldown = cooldown
         self._max_tokens = max_tokens
+        self._upstream_budget_s = upstream_budget_s
+        self._clock = clock or time.monotonic
 
     async def call(
         self,
@@ -152,8 +161,21 @@ class LlmClient:
         # Причина попадает в текст итоговой ошибки, а по нему error_classifier
         # выбирает error_code задачи — поэтому она всегда от последней ошибки.
         last_reason = "ни одной попытки"
-        for attempt in range(retries):
+        tried: list[str] = []
+        upstream_deadline: float | None = None
+        upstream_retry = False
+        attempt = 0
+        while True:
+            if upstream_retry:
+                if self._clock() >= upstream_deadline:
+                    break
+            elif attempt >= retries:
+                break
+            upstream_retry = False
+            attempt += 1
             model = await self._cooldown.acquire(models)
+            if model not in tried:
+                tried.append(model)
             kwargs: dict[str, Any] = {
                 "model": model,
                 "messages": messages,
@@ -204,17 +226,27 @@ class LlmClient:
                 # с запросом: пока есть другие модели, задача падать не должна.
                 last_error = error
                 last_reason = f"HTTP {getattr(error, 'status_code', '5xx')} апстрима"
+                if upstream_deadline is None:
+                    upstream_deadline = self._clock() + self._upstream_budget_s
+                upstream_retry = True
+                await self._cooldown.mark_rate_limited(model, _UPSTREAM_ERROR_COOLDOWN_S)
+                # Апстрим сам просит подождать. Если остывают все модели, ждём ту,
+                # что освободится раньше, а не бьём в горячую; иначе — короткий
+                # нарастающий бэк-офф перед следующей моделью. Пауза не выходит
+                # за бюджет.
+                wait = await self._cooldown.seconds_until_free(models)
+                if wait <= 0:
+                    wait = _NETWORK_BACKOFF_S * attempt
+                wait = max(0.0, min(wait, upstream_deadline - self._clock()))
                 logger.warning(
-                    "Апстрим недоступен (%s), попытка %d/%d: %s",
+                    "Апстрим недоступен (%s), попытка %d, ждём %.0f с (бюджет до %.0f с): %s",
                     model,
-                    attempt + 1,
-                    retries,
+                    attempt,
+                    wait,
+                    upstream_deadline - self._clock(),
                     error,
                 )
-                await self._cooldown.mark_rate_limited(model, _UPSTREAM_ERROR_COOLDOWN_S)
-                # Апстрим сам просит подождать, поэтому ретрай без паузы сжёг бы
-                # все попытки за доли секунды.
-                await asyncio.sleep(_NETWORK_BACKOFF_S * (attempt + 1))
+                await asyncio.sleep(wait)
                 continue
             except (openai.APITimeoutError, openai.APIConnectionError) as error:
                 # Сетевой флап (не 429): модель не виновата, cooldown не трогаем —
@@ -224,11 +256,11 @@ class LlmClient:
                 logger.warning(
                     "Сетевая ошибка OpenRouter (%s), попытка %d/%d: %s",
                     model,
-                    attempt + 1,
+                    attempt,
                     retries,
                     error,
                 )
-                await asyncio.sleep(_NETWORK_BACKOFF_S * (attempt + 1))
+                await asyncio.sleep(_NETWORK_BACKOFF_S * attempt)
                 continue
 
             # Провайдер может отвалиться до начала генерации: тогда OpenRouter
@@ -280,5 +312,6 @@ class LlmClient:
             return text
 
         raise RuntimeError(
-            f"OpenRouter не дал ответ за {retries} попыток ({last_reason}): {last_error}"
+            f"OpenRouter не дал ответ за {attempt} попыток ({last_reason}), "
+            f"модели: {', '.join(tried)}: {last_error}"
         )
