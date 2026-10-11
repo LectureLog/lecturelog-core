@@ -6,6 +6,8 @@ import openai
 import pytest
 
 import lecturelog.infrastructure.llm.llm_client as mod
+from lecturelog.application.error_classifier import classify_error
+from lecturelog.domain.enums import ErrorCode
 from lecturelog.infrastructure.llm.llm_client import (
     _NETWORK_BACKOFF_S as _NETWORK_BACKOFF_S_EXPECTED,
 )
@@ -364,6 +366,38 @@ async def test_google_byok_auth_error_with_sdk_unwrapped_body_falls_back(monkeyp
 
 
 @pytest.mark.asyncio
+async def test_byok_auth_errors_exhausted_do_not_claim_rate_limit():
+    """Причина в тексте обёртки — по ней классифицируется error_code задачи.
+
+    Раньше причина по умолчанию была «429/RESOURCE_EXHAUSTED», и мёртвый ключ
+    превращался у клиента в rate_limit.
+    """
+    fake = FakeAsyncOpenAI([_authentication_error(byok=True) for _ in range(3)])
+    client = LlmClient(fake, ModelCooldown())
+
+    with pytest.raises(RuntimeError) as exc_info:
+        await client.call("q", models=["m1"], retries=3)
+
+    message = str(exc_info.value)
+    assert "429" not in message
+    assert "RESOURCE_EXHAUSTED" not in message
+    assert classify_error(exc_info.value) is not ErrorCode.RATE_LIMIT
+
+
+@pytest.mark.asyncio
+async def test_last_reason_follows_last_error(monkeypatch):
+    """Причина в тексте — от последней ошибки, а не от первой нестандартной."""
+    monkeypatch.setattr(mod.asyncio, "sleep", _no_sleep)
+    fake = FakeAsyncOpenAI([_upstream_unavailable_error(), _rate_limit_error(_RPM_RAW)])
+    client = LlmClient(fake, ModelCooldown())
+
+    with pytest.raises(RuntimeError) as exc_info:
+        await client.call("q", models=["m1", "m2"], retries=2)
+
+    assert "(429/RESOURCE_EXHAUSTED)" in str(exc_info.value)
+
+
+@pytest.mark.asyncio
 async def test_openrouter_auth_error_does_not_fallback():
     client = LlmClient(
         FakeAsyncOpenAI([_authentication_error(byok=False)]),
@@ -582,16 +616,62 @@ async def test_provider_unavailable_falls_back_to_next_model(monkeypatch):
     assert [model for model, _ttl in cooldown.marked] == ["m1"]
 
 
+class FakeClock:
+    """Часы, которые двигает только подменённый asyncio.sleep."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+        self.slept: list[float] = []
+
+    def __call__(self) -> float:
+        return self.now
+
+    async def sleep(self, delay: float) -> None:
+        self.slept.append(delay)
+        self.now += delay
+
+
 @pytest.mark.asyncio
-async def test_provider_unavailable_exhausts_retries_with_clear_message(monkeypatch):
-    monkeypatch.setattr(mod.asyncio, "sleep", _no_sleep)
-    fake = FakeAsyncOpenAI([_upstream_unavailable_error() for _ in range(3)])
-    client = LlmClient(fake, ModelCooldown())
+async def test_provider_unavailable_waits_for_soonest_model_within_budget(monkeypatch):
+    """Перегрузка Gemini на проде длится минуты: пять быстрых попыток за ~30 с её
+    не переживали. Когда остывают все модели, ждём ближайшую, а не бьём в горячую,
+    и число попыток на 5xx ограничено бюджетом времени, а не retries."""
+    clock = FakeClock()
+    monkeypatch.setattr(mod.asyncio, "sleep", clock.sleep)
+    monkeypatch.setattr(mod, "_UPSTREAM_ERROR_COOLDOWN_S", 60.0)
+    fake = FakeAsyncOpenAI([_upstream_unavailable_error() for _ in range(3)] + [_resp("ok")])
+    client = LlmClient(fake, ModelCooldown(time_func=clock), clock=clock)
+
+    assert await client.call("q", models=["m1", "m2"], retries=2) == "ok"
+
+    assert [item["model"] for item in fake.chat.completions.kwargs_history] == [
+        "m1",
+        "m2",
+        "m1",
+        "m2",
+    ]
+    # m2 свободна — обычная пауза; обе остывают — ждём до освобождения m1 (t=60),
+    # затем до освобождения m2 (t=62).
+    assert clock.slept == [_NETWORK_BACKOFF_S_EXPECTED, 58.0, 2.0]
+
+
+@pytest.mark.asyncio
+async def test_provider_unavailable_longer_than_budget_fails_with_models(monkeypatch):
+    clock = FakeClock()
+    monkeypatch.setattr(mod.asyncio, "sleep", clock.sleep)
+    fake = FakeAsyncOpenAI([_upstream_unavailable_error() for _ in range(100)])
+    client = LlmClient(fake, ModelCooldown(time_func=clock), clock=clock, upstream_budget_s=200.0)
 
     with pytest.raises(RuntimeError) as exc_info:
-        await client.call("q", models=["m1"], retries=3)
+        await client.call("q", models=["m1", "m2"], retries=2)
 
-    assert "503" in str(exc_info.value)
+    message = str(exc_info.value)
+    assert "HTTP 503 апстрима" in message
+    assert "m1" in message and "m2" in message
+    assert classify_error(exc_info.value) is ErrorCode.RATE_LIMIT
+    # пауза не вылезает за бюджет
+    assert clock.now <= 200.0
+    assert fake.chat.completions.calls > 2
 
 
 @pytest.mark.asyncio

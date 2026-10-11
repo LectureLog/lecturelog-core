@@ -1,4 +1,5 @@
 import json
+import logging
 
 import pytest
 
@@ -553,6 +554,104 @@ async def test_structurize_repairs_inverted_range_in_last_section(tmp_path, prom
         ("00:00:00", "00:06:00"),
         ("00:06:00", "00:10:00"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_structurize_completes_section_without_end_in_the_middle(
+    tmp_path, prompts_dir, caplog
+):
+    """Сплиттер иногда теряет поле end у подтемы, и задача падала с KeyError: 'end'.
+
+    Конец достраиваем тем же путём, что и при end <= start: начало следующей подтемы.
+    """
+    srt = tmp_path / "t.srt"
+    srt.write_text(_THREE_CUES_SRT, encoding="utf-8")
+
+    topics_json = json.dumps([{"title": "Тема 1", "start": "00:00:00", "end": "00:10:00"}])
+    sections_json = json.dumps(
+        [
+            {"title": "Подтема 1", "start": "00:00:00", "end": "00:04:00"},
+            {"title": "Подтема 2", "start": "00:04:00"},
+            {"title": "Подтема 3", "start": "00:07:00", "end": "00:10:00"},
+        ]
+    )
+    gemini = ScriptedGemini([topics_json, sections_json, "к1", "к2", "к3"])
+
+    structurizer = _make_structurizer(gemini, prompts_dir)
+    with caplog.at_level(logging.WARNING):
+        topics = await structurizer.structurize(
+            srt_path=srt, slide_images=[], output_dir=tmp_path / "out"
+        )
+
+    assert [(s.start, s.end) for s in topics[0].sections] == [
+        ("00:00:00", "00:04:00"),
+        ("00:04:00", "00:07:00"),
+        ("00:07:00", "00:10:00"),
+    ]
+    assert any("Подтема 2" in record.getMessage() for record in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_structurize_completes_last_section_without_end(tmp_path, prompts_dir, caplog):
+    """У последней подтемы без end соседа справа нет — конец берём из конца транскрипта."""
+    srt = tmp_path / "t.srt"
+    srt.write_text(_SIX_MIN_CUES_SRT, encoding="utf-8")
+
+    topics_json = json.dumps([{"title": "Тема 1", "start": "00:00:00", "end": "00:10:00"}])
+    sections_json = json.dumps(
+        [
+            {"title": "Подтема 1", "start": "00:00:00", "end": "00:06:00"},
+            {"title": "Подтема 2", "start": "00:06:00"},
+        ]
+    )
+    gemini = ScriptedGemini([topics_json, sections_json, "к1", "к2"])
+
+    structurizer = _make_structurizer(gemini, prompts_dir)
+    with caplog.at_level(logging.WARNING):
+        topics = await structurizer.structurize(
+            srt_path=srt, slide_images=[], output_dir=tmp_path / "out"
+        )
+
+    assert [(s.start, s.end) for s in topics[0].sections] == [
+        ("00:00:00", "00:06:00"),
+        ("00:06:00", "00:10:00"),
+    ]
+    assert any("Подтема 2" in record.getMessage() for record in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_structurize_completes_topic_without_end(tmp_path, prompts_dir, caplog):
+    """Тема без end ломала уже нарезку фрагмента для subsplit, до всяких подтем.
+
+    Путь общий с подтемами: конец первой темы — начало второй, последней — конец
+    транскрипта.
+    """
+    srt = tmp_path / "t.srt"
+    srt.write_text(_SIX_MIN_CUES_SRT, encoding="utf-8")
+
+    topics_json = json.dumps(
+        [
+            {"title": "Тема 1", "start": "00:00:00"},
+            {"title": "Тема 2", "start": "00:06:00"},
+        ]
+    )
+    sections_1 = json.dumps([{"title": "Подтема 1", "start": "00:00:00", "end": "00:06:00"}])
+    sections_2 = json.dumps([{"title": "Подтема 2", "start": "00:06:00", "end": "00:10:00"}])
+    gemini = ScriptedGemini([topics_json, sections_1, sections_2, "к1", "к2"])
+
+    structurizer = _make_structurizer(gemini, prompts_dir)
+    with caplog.at_level(logging.WARNING):
+        topics = await structurizer.structurize(
+            srt_path=srt, slide_images=[], output_dir=tmp_path / "out"
+        )
+
+    assert [(t.start, t.end) for t in topics] == [
+        ("00:00:00", "00:06:00"),
+        ("00:06:00", "00:10:00"),
+    ]
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("Тема 1" in message for message in messages)
+    assert any("Тема 2" in message for message in messages)
 
 
 @pytest.mark.asyncio

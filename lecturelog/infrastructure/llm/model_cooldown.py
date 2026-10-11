@@ -55,6 +55,12 @@ class ModelCooldown:
             logger.warning("все модели остывают, беру %s (раньше всех освободится)", soonest)
             return soonest
 
+    async def seconds_until_free(self, models: list[str]) -> float:
+        """Сколько ждать, пока освободится хотя бы одна модель списка (0 — уже есть)."""
+        async with self._lock:
+            now = self._time()
+            return max(0.0, min(self._blocked_until[m] for m in models) - now)
+
     async def mark_rate_limited(self, model: str, ttl: float) -> None:
         async with self._lock:
             self._blocked_until[model] = self._time() + ttl
