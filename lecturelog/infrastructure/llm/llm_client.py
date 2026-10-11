@@ -149,7 +149,9 @@ class LlmClient:
             extra_body["reasoning"] = {"effort": effort, "exclude": True}
 
         last_error: Exception | None = None
-        last_reason = "429/RESOURCE_EXHAUSTED"
+        # Причина попадает в текст итоговой ошибки, а по нему error_classifier
+        # выбирает error_code задачи — поэтому она всегда от последней ошибки.
+        last_reason = "ни одной попытки"
         for attempt in range(retries):
             model = await self._cooldown.acquire(models)
             kwargs: dict[str, Any] = {
@@ -177,6 +179,7 @@ class LlmClient:
                 resp = await self._client.chat.completions.create(**kwargs)
             except openai.RateLimitError as error:
                 last_error = error
+                last_reason = "429/RESOURCE_EXHAUSTED"
                 raw = _extract_rate_limit_raw(error)
                 ttl, _kind = parse_cooldown_ttl(
                     raw, seconds_to_midnight=self._cooldown.seconds_to_midnight()
@@ -189,6 +192,7 @@ class LlmClient:
                 if not _is_google_byok_auth_error(error):
                     raise
                 last_error = error
+                last_reason = "401: BYOK-ключ отклонён"
                 logger.warning(
                     "Google BYOK credential rejected for %s; trying next model",
                     model,
@@ -216,6 +220,7 @@ class LlmClient:
                 # Сетевой флап (не 429): модель не виновата, cooldown не трогаем —
                 # ждём с нарастающим бэк-оффом и пробуем снова.
                 last_error = error
+                last_reason = "сетевые ошибки"
                 logger.warning(
                     "Сетевая ошибка OpenRouter (%s), попытка %d/%d: %s",
                     model,

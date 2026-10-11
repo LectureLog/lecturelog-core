@@ -1,8 +1,12 @@
+import json
+from pathlib import Path
+
 import httpx
 import pytest
 
 from lecturelog.application.error_classifier import classify_error
 from lecturelog.domain.enums import ErrorCode
+from lecturelog.infrastructure.structurize.gemini_structurizer import _parse_json
 
 
 def _http_status_error(code: int) -> httpx.HTTPStatusError:
@@ -56,3 +60,41 @@ def test_value_error_is_bad_input():
 
 def test_generic_runtime_is_internal():
     assert classify_error(RuntimeError("ffmpeg завершился с ошибкой: ...")) is ErrorCode.INTERNAL
+
+
+# Реальные тексты ошибок с прода (tasks.error, user_id вымаран).
+_PROVIDER_ERRORS = Path(__file__).parent.parent / "fixtures" / "provider_errors"
+_PROD_401 = (_PROVIDER_ERRORS / "openrouter_401_with_previous_429.txt").read_text(encoding="utf-8")
+_PROD_503 = (_PROVIDER_ERRORS / "openrouter_503_high_demand.txt").read_text(encoding="utf-8")
+
+
+def test_prod_401_with_previous_429_is_not_rate_limit():
+    # Подстроки 429/RESOURCE_EXHAUSTED приносит metadata.previous_errors —
+    # история ретраев самого OpenRouter, а настоящая причина — отозванный ключ.
+    assert "429" in _PROD_401
+    assert classify_error(RuntimeError(_PROD_401)) is not ErrorCode.RATE_LIMIT
+
+
+def test_llm_client_wrapper_over_prod_401_is_not_rate_limit():
+    exc = RuntimeError(
+        f"OpenRouter не дал ответ за 5 попыток (401: BYOK-ключ отклонён): {_PROD_401}"
+    )
+    assert classify_error(exc) is not ErrorCode.RATE_LIMIT
+
+
+def test_prod_503_high_demand_is_rate_limit():
+    assert classify_error(RuntimeError(_PROD_503)) is ErrorCode.RATE_LIMIT
+
+
+def test_llm_client_wrapper_over_prod_503_is_rate_limit():
+    exc = RuntimeError(f"OpenRouter не дал ответ за 5 попыток (HTTP 503 апстрима): {_PROD_503}")
+    assert classify_error(exc) is ErrorCode.RATE_LIMIT
+
+
+def test_truncated_llm_json_is_not_bad_input():
+    # Прод: «Unterminated string starting at: line 20 column 12» из разбора ответа
+    # split_topics. Вход пользователя тут ни при чём.
+    with pytest.raises(json.JSONDecodeError) as exc_info:
+        _parse_json('```json\n[{"title": "Тема 1", "start": "00:00:00", "end": "00:0')
+    assert "Unterminated string" in str(exc_info.value)
+    assert classify_error(exc_info.value) is ErrorCode.INTERNAL

@@ -6,6 +6,8 @@ import openai
 import pytest
 
 import lecturelog.infrastructure.llm.llm_client as mod
+from lecturelog.application.error_classifier import classify_error
+from lecturelog.domain.enums import ErrorCode
 from lecturelog.infrastructure.llm.llm_client import (
     _NETWORK_BACKOFF_S as _NETWORK_BACKOFF_S_EXPECTED,
 )
@@ -361,6 +363,38 @@ async def test_google_byok_auth_error_with_sdk_unwrapped_body_falls_back(monkeyp
     client = LlmClient(fake, ModelCooldown())
 
     assert await client.call("q", models=["m1", "m2"]) == "fallback ok"
+
+
+@pytest.mark.asyncio
+async def test_byok_auth_errors_exhausted_do_not_claim_rate_limit():
+    """Причина в тексте обёртки — по ней классифицируется error_code задачи.
+
+    Раньше причина по умолчанию была «429/RESOURCE_EXHAUSTED», и мёртвый ключ
+    превращался у клиента в rate_limit.
+    """
+    fake = FakeAsyncOpenAI([_authentication_error(byok=True) for _ in range(3)])
+    client = LlmClient(fake, ModelCooldown())
+
+    with pytest.raises(RuntimeError) as exc_info:
+        await client.call("q", models=["m1"], retries=3)
+
+    message = str(exc_info.value)
+    assert "429" not in message
+    assert "RESOURCE_EXHAUSTED" not in message
+    assert classify_error(exc_info.value) is not ErrorCode.RATE_LIMIT
+
+
+@pytest.mark.asyncio
+async def test_last_reason_follows_last_error(monkeypatch):
+    """Причина в тексте — от последней ошибки, а не от первой нестандартной."""
+    monkeypatch.setattr(mod.asyncio, "sleep", _no_sleep)
+    fake = FakeAsyncOpenAI([_upstream_unavailable_error(), _rate_limit_error(_RPM_RAW)])
+    client = LlmClient(fake, ModelCooldown())
+
+    with pytest.raises(RuntimeError) as exc_info:
+        await client.call("q", models=["m1", "m2"], retries=2)
+
+    assert "(429/RESOURCE_EXHAUSTED)" in str(exc_info.value)
 
 
 @pytest.mark.asyncio
