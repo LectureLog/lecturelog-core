@@ -614,6 +614,9 @@ class GeminiStructurizer(Structurizer):
             # Колонтитулы колоды не различают слайды — как и в каталоге выравнивания.
             boilerplate = detect_boilerplate_lines(slide_assets)
             flat_sections = [section for topic in result for section in topic.sections]
+            # Реплики-доказательства указывают, какой абзац раздела пересказывает
+            # момент показа слайда; номера — те же, что дал выравниванию parse_srt_blocks.
+            cue_text = {block.block_id: block.text for block in parse_srt_blocks(srt_content)}
             for assignment in v2_assignments:
                 if assignment.match_status == "duplicate":
                     placements.append(
@@ -637,6 +640,9 @@ class GeminiStructurizer(Structurizer):
                         assignment,
                         entry_result.entry,
                         section.content,
+                        evidence_text=" ".join(
+                            cue_text.get(block_id, "") for block_id in assignment.evidence_block_ids
+                        ),
                     )
                 else:
                     placement = SlidePlacement(

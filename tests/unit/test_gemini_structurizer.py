@@ -55,9 +55,9 @@ async def test_v2_anchor_entry_excludes_deck_boilerplate(tmp_path, prompts_dir, 
     captured = []
     real_anchor = module.anchor_assignment
 
-    def spy(assignment, entry, content):
+    def spy(assignment, entry, content, **kwargs):
         captured.append(entry)
-        return real_anchor(assignment, entry, content)
+        return real_anchor(assignment, entry, content, **kwargs)
 
     monkeypatch.setattr(module, "anchor_assignment", spy)
     srt = tmp_path / "t.srt"
@@ -304,6 +304,61 @@ async def test_v2_unbound_slide_lands_in_section_gallery(tmp_path, prompts_dir, 
         "no_candidates",
     ]
     assert diagnostic["placements"][0]["fallback_reason"] == "unbound:weak_evidence"
+
+
+@pytest.mark.asyncio
+async def test_v2_marker_lands_after_paragraph_retelling_evidence_cue(
+    tmp_path, prompts_dir, monkeypatch
+):
+    """Маркер встаёт у абзаца, пересказывающего реплику-доказательство, а не у
+    первого абзаца с термином слайда."""
+    srt = tmp_path / "t.srt"
+    srt.write_text(
+        "1\n00:00:00,000 --> 00:00:05,000\nЧто такое СУБД? Это система хранения.\n\n"
+        "2\n00:00:05,000 --> 00:00:10,000\n"
+        "Пример проникновения слоев архитектуры между программными компонентами\n",
+        encoding="utf-8",
+    )
+    slide = tmp_path / "slide.png"
+    slide.write_bytes(b"slide")
+    gemini = ScriptedGemini(
+        [
+            json.dumps([{"title": "T", "start": "0:00", "end": "0:10"}]),
+            json.dumps([{"title": "S", "start": "0:00", "end": "0:10"}]),
+            "Что такое **СУБД**? Это система хранения данных.\n\n"
+            "В качестве примера проникновения слоев архитектуры между программными "
+            "компонентами показаны слой бизнес-логики и слой хранения данных.",
+        ]
+    )
+    structurizer = _make_structurizer(gemini, prompts_dir)
+    structurizer._document_alignment_mode = "v2"
+
+    async def align(**_kwargs):
+        return AlignmentResult(
+            (SlideAssignment(1, "discussed", 0, (2,), 5.0, "verified", 50.0, "matched"),),
+            {},
+        )
+
+    monkeypatch.setattr(structurizer._document_alignment, "align", align)
+    result = await structurizer.structurize(
+        srt_path=srt,
+        slide_assets=[
+            SlideAsset(
+                1,
+                slide,
+                "document",
+                extracted_text="Функции СУБД\nслой бизнес-логики\nслой хранения данных",
+                native_text_quality="good",
+            )
+        ],
+        context=StructurizeContext("audio"),
+        output_dir=tmp_path / "out",
+    )
+
+    assert result.slide_placements[0].block_index == 1
+    assert (
+        result.topics[0].sections[0].content.endswith("слой хранения данных.\n\n<!-- slide:1 -->")
+    )
 
 
 def test_parse_json_strips_code_fence():
@@ -1178,6 +1233,22 @@ def test_render_prompt_allows_name_fix_only_on_phonetic_similarity():
     )
 
     assert "только при фонетическом сходстве" in text.lower()
+
+
+def test_render_prompt_tangent_example_holds_no_format_instructions():
+    """Модель копирует пример callout дословно: правило формата внутри примера
+    («Каждая строка начинается с "> "») утекало в tangent-блоки конспекта."""
+    from pathlib import Path
+
+    text = (Path(__file__).resolve().parents[2] / "prompts" / "section_v1.md").read_text(
+        encoding="utf-8"
+    )
+    example = [line.casefold() for line in text.splitlines() if line.startswith(">")]
+
+    assert example
+    for word in ("строк", "начина", "callout", "каллаут", "каллмаут", "формат"):
+        assert not any(word in line for line in example), word
+    assert "служебн" in text.casefold()
 
 
 async def _structurize_one_slide(tmp_path, prompts_dir, monkeypatch, *, mode, align, slide_num=1):
